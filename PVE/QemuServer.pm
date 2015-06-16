@@ -18,11 +18,12 @@ use Cwd 'abs_path';
 use IPC::Open3;
 use JSON;
 use Fcntl;
+use UUID;
 use PVE::SafeSyslog;
 use Storable qw(dclone);
 use PVE::Exception qw(raise raise_param_exc);
 use PVE::Storage;
-use PVE::Tools qw(run_command lock_file lock_file_full file_read_firstline dir_glob_foreach);
+use PVE::Tools qw(run_command lock_file lock_file_full file_read_firstline dir_glob_foreach $IPV6RE $IPV4RE);
 use PVE::JSONSchema qw(get_standard_option);
 use PVE::Cluster qw(cfs_register_file cfs_read_file cfs_write_file cfs_lock_file);
 use PVE::INotify;
@@ -534,6 +535,27 @@ EODESCR
 	description => "Select BIOS implementation.",
 	default => 'seabios',
     },
+    searchdomain => {
+        optional => 1,
+        type => 'string',
+        description => "Sets DNS search domains for a container. Create will automatically use the setting from the host if you neither set searchdomain or nameserver.",
+    },
+    nameserver => {
+        optional => 1,
+        type => 'string',
+        description => "Sets DNS server IP address for a container. Create will automatically use the setting from the host if you neither set searchdomain or nameserver.",
+    },
+    sshkey => {
+        optional => 1,
+        type => 'string',
+        description => "Ssh keys for root",
+    },
+    cloudinit => {
+	optional => 1,
+	type => 'boolean',
+	description => "Enable cloudinit config generation.",
+	default => 0,
+    },
 };
 
 # what about other qemu settings ?
@@ -681,6 +703,20 @@ my $net_fmt = {
     link_down => {
 	type => 'boolean',
 	description => 'Whether this interface should be disconnected (like pulling the plug).',
+	optional => 1,
+    },
+    cidr => {
+	type => 'string',
+	format => 'CIDR',
+	format_description => 'IP/CIDR',
+	description => 'IP Address for the interface.',
+	optional => 1,
+    },
+    gateway => {
+	type => 'string',
+	format => 'ip',
+	format_description => 'IP',
+	description => 'Default gateway to use with this interface.',
 	optional => 1,
     },
 };
@@ -1266,6 +1302,8 @@ sub get_iso_path {
 	return get_cdrom_path();
     } elsif ($cdrom eq 'none') {
 	return '';
+    } elsif ($cdrom eq 'cloudinit') {
+	return "/tmp/cloudinit/$vmid/configdrive.iso";
     } elsif ($cdrom =~ m|^/|) {
 	return $cdrom;
     } else {
@@ -1277,7 +1315,7 @@ sub get_iso_path {
 sub filename_to_volume_id {
     my ($vmid, $file, $media) = @_;
 
-    if (!($file eq 'none' || $file eq 'cdrom' ||
+     if (!($file eq 'none' || $file eq 'cdrom' || $file eq 'cloudinit' ||
 	  $file =~ m|^/dev/.+| || $file =~ m/^([^:]+):(.+)$/)) {
 
 	return undef if $file =~ m|/|;
@@ -1870,6 +1908,11 @@ sub parse_net {
 	my $dc = PVE::Cluster::cfs_read_file('datacenter.cfg');
 	$res->{macaddr} = PVE::Tools::random_ether_addr($dc->{mac_prefix});
     }
+    if (my $cidr = $res->{cidr}) {
+	($res->{address}, $res->{netmask}) = split('/', $cidr);
+	delete $res->{cidr};
+    }
+
     return $res;
 }
 
@@ -4592,11 +4635,13 @@ sub vm_start {
 	PVE::QemuConfig->check_lock($conf) if !$skiplock;
 
 	die "VM $vmid already running\n" if check_running($vmid, undef, $migratedfrom);
-
+	
 	if (!$statefile && scalar(keys %{$conf->{pending}})) {
 	    vmconfig_apply_pending($vmid, $conf, $storecfg);
 	    $conf = PVE::QemuConfig->load_config($vmid); # update/reload
 	}
+
+	generate_cloudinitconfig($conf, $vmid);
 
 	my $defaults = load_defaults();
 
@@ -6585,6 +6630,110 @@ sub nbd_stop {
     my ($vmid) = @_;
 
     vm_mon_cmd($vmid, 'nbd-server-stop');
+}
+
+sub generate_cloudinitconfig {
+    my ($conf, $vmid) = @_;
+
+    return if !$conf->{cloudinit};
+
+    my $path = "/tmp/cloudinit/$vmid";
+
+    mkdir "/tmp/cloudinit";
+    mkdir $path;
+    mkdir "$path/drive";
+    mkdir "$path/drive/openstack";
+    mkdir "$path/drive/openstack/latest";
+    mkdir "$path/drive/openstack/content";
+    generate_cloudinit_userdata($conf, $path);
+    generate_cloudinit_metadata($conf, $path);
+    generate_cloudinit_network($conf, $path);
+
+    my $cmd = [];
+    push @$cmd, 'genisoimage';
+    push @$cmd, '-R';
+    push @$cmd, '-V', 'config-2';
+    push @$cmd, '-o', "$path/configdrive.iso";
+    push @$cmd, "$path/drive";
+
+    run_command($cmd);
+    rmtree("$path/drive");
+    my $drive = PVE::QemuServer::parse_drive('ide3', 'cloudinit,media=cdrom');
+    $conf->{'ide3'} = PVE::QemuServer::print_drive($vmid, $drive);
+    update_config_nolock($vmid, $conf, 1);
+
+}
+
+sub generate_cloudinit_userdata {
+    my ($conf, $path) = @_;
+
+    my $content = "#cloud-config\n";
+    my $hostname = $conf->{searchdomain} ? $conf->{name}.".".$conf->{searchdomain} : $conf->{name};
+    $content .= "fqdn: $hostname\n";
+    $content .= "manage_etc_hosts: true\n";
+
+    if ($conf->{sshkey}) {
+	$content .= "users:\n";
+	$content .= "  - default\n";
+	$content .= "  - name: root\n";
+	$content .= "    ssh-authorized-keys:\n";
+	$content .= "      - $conf->{sshkey}\n";
+    }
+
+    $content .= "package_upgrade: true\n";
+
+    my $fn = "$path/drive/openstack/latest/user_data";
+    file_write($fn, $content);
+
+}
+
+sub generate_cloudinit_metadata {
+    my ($conf, $path) = @_;
+
+    my ($uuid, $uuid_str);
+    UUID::generate($uuid);
+    UUID::unparse($uuid, $uuid_str);
+
+    my $content = "{\n";   
+    $content .= "     \"uuid\": \"$uuid_str\",\n";
+    $content .= "     \"network_config\" :{ \"content_path\": \"/content/0000\"}\n";
+    $content .= "}\n";   
+
+    my $fn = "$path/drive/openstack/latest/meta_data.json";
+
+    return file_write($fn, $content);
+
+
+}
+
+sub generate_cloudinit_network {
+    my ($conf, $path) = @_;
+
+    my $content = "auto lo\n";
+    $content .="iface lo inet loopback\n\n";
+
+    foreach my $opt (keys %$conf) {
+        next if $opt !~ m/^net(\d+)$/;
+        my $net = parse_net($conf->{$opt});
+	$opt =~ s/net/eth/;
+
+	$content .="auto $opt\n";
+	if ($net->{address}) {
+	    $content .="iface $opt inet static\n";
+	    $content .="        address $net->{address}\n";
+	    $content .="        netmask $PVE::Network::ipv4_reverse_mask->[$net->{netmask}]\n";
+	    $content .="        gateway $net->{gateway}\n" if $net->{gateway};
+	} else {
+	    $content .="iface $opt inet dhcp\n";
+	}
+    }
+
+    $content .="        dns-nameservers $conf->{nameserver}\n" if $conf->{nameserver};
+    $content .="        dns-search $conf->{searchdomain}\n" if $conf->{searchdomain};
+
+    my $fn = "$path/drive/openstack/content/0000";
+    file_write($fn, $content);
+
 }
 
 1;
