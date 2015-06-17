@@ -18,7 +18,6 @@ use Cwd 'abs_path';
 use IPC::Open3;
 use JSON;
 use Fcntl;
-use UUID;
 use PVE::SafeSyslog;
 use Storable qw(dclone);
 use PVE::Exception qw(raise raise_param_exc);
@@ -705,20 +704,6 @@ my $net_fmt = {
 	description => 'Whether this interface should be disconnected (like pulling the plug).',
 	optional => 1,
     },
-    cidr => {
-	type => 'string',
-	format => 'CIDR',
-	format_description => 'IP/CIDR',
-	description => 'IP Address for the interface.',
-	optional => 1,
-    },
-    gateway => {
-	type => 'string',
-	format => 'ip',
-	format_description => 'IP',
-	description => 'Default gateway to use with this interface.',
-	optional => 1,
-    },
 };
 
 my $netdesc = {
@@ -729,8 +714,26 @@ my $netdesc = {
 
 PVE::JSONSchema::register_standard_option("pve-qm-net", $netdesc);
 
+my $ipconfigdesc = {
+    optional => 1,
+    type => 'string', format => 'pve-qm-ipconfig',
+    typetext => "[ip=IPv4_CIDR[,gw=IPv4_GATEWAY]][,ip6=IPv6_CIDR[,gw6=IPv6_GATEWAY]]",
+    description => <<'EODESCR',
+Specify IP addresses and gateways for the corresponding interface.
+
+IP addresses use CIDR notation, gateways are optional but need an IP of the same type specified.
+
+The special string 'dhcp' can be used for IP addresses to use DHCP, in which case no explicit gateway should be provided.
+For IPv6 the special string 'auto' can be used to use stateless autoconfiguration.
+
+If cloud-init is enabled and neither an IPv4 nor an IPv6 address is specified, it defaults to using dhcp on IPv4.
+EODESCR
+};
+PVE::JSONSchema::register_standard_option("pve-qm-ipconfig", $netdesc);
+
 for (my $i = 0; $i < $MAX_NETS; $i++)  {
     $confdesc->{"net$i"} = $netdesc;
+    $confdesc->{"ipconfig$i"} = $ipconfigdesc;
 }
 
 PVE::JSONSchema::register_format('pve-volume-id-or-qm-path', \&verify_volume_id_or_qm_path);
@@ -1908,9 +1911,57 @@ sub parse_net {
 	my $dc = PVE::Cluster::cfs_read_file('datacenter.cfg');
 	$res->{macaddr} = PVE::Tools::random_ether_addr($dc->{mac_prefix});
     }
-    if (my $cidr = $res->{cidr}) {
-	($res->{address}, $res->{netmask}) = split('/', $cidr);
-	delete $res->{cidr};
+    $res->{macaddr} = PVE::Tools::random_ether_addr() if !defined($res->{macaddr});
+    return $res;
+}
+
+# ipconfigX ip=cidr,gw=ip,ip6=cidr,gw6=ip
+sub parse_ipconfig {
+    my ($data) = @_;
+
+    my $res = {};
+
+    foreach my $kvp (split(/,/, $data)) {
+	if ($kvp =~ m/^ip=dhcp$/) {
+	    $res->{address} = 'dhcp';
+	} elsif ($kvp =~ m/^ip=($IPV4RE)\/(\d+)$/) {
+	    $res->{address} = $1;
+	    $res->{netmask} = $2;
+	} elsif ($kvp =~ m/^gw=($IPV4RE)$/) {
+	    $res->{gateway} = $1;
+	} elsif ($kvp =~ m/^ip6=dhcp6?$/) {
+	    $res->{address6} = 'dhcp';
+	} elsif ($kvp =~ m/^ip6=auto$/) {
+	    $res->{address6} = 'auto';
+	} elsif ($kvp =~ m/^ip6=($IPV6RE)\/(\d+)$/) {
+	    $res->{address6} = $1;
+	    $res->{netmask6} = $2;
+	} elsif ($kvp =~ m/^gw6=($IPV6RE)$/) {
+	    $res->{gateway6} = $1;
+	} else {
+	    return undef;
+	}
+    }
+
+    if ($res->{gateway} && !$res->{address}) {
+	warn 'gateway specified without specifying an IP address';
+	return undef;
+    }
+    if ($res->{gateway6} && !$res->{address6}) {
+	warn 'IPv6 gateway specified without specifying an IPv6 address';
+	return undef;
+    }
+    if ($res->{gateway} && $res->{address} eq 'dhcp') {
+	warn 'gateway specified together with DHCP';
+	return undef;
+    }
+    if ($res->{gateway6} && $res->{address6} eq 'dhcp') {
+	warn 'IPv6 gateway specified together with DHCP6';
+	return undef;
+    }
+
+    if (!$res->{address} && !$res->{address6}) {
+	return { address => 'dhcp' };
     }
 
     return $res;
@@ -2100,6 +2151,17 @@ sub verify_bootdisk {
     return undef if $noerr;
 
     die "invalid boot disk '$value'\n";
+}
+
+PVE::JSONSchema::register_format('pve-qm-ipconfig', \&verify_ipconfig);
+sub verify_ipconfig {
+    my ($value, $noerr) = @_;
+
+    return $value if parse_ipconfig($value);
+
+    return undef if $noerr;
+
+    die "unable to parse ipconfig options\n";
 }
 
 sub parse_watchdog {
@@ -2366,6 +2428,11 @@ sub write_vm_config {
 	die "option ide2 conflicts with cdrom\n" if $conf->{ide2};
 	$conf->{ide2} = $conf->{cdrom};
 	delete $conf->{cdrom};
+    }
+
+    if ($conf->{cloudinit}) {
+	die "option cloudinit conflicts with ide3\n" if $conf->{ide3};
+	delete $conf->{cloudinit};
     }
 
     # we do not use 'smp' any longer
@@ -3421,6 +3488,8 @@ sub config_to_command {
 	push @$devices, '-drive',$drive_cmd;
 	push @$devices, '-device', print_drivedevice_full($storecfg, $conf, $vmid, $drive, $bridges);
     });
+
+    generate_cloudinit_command($conf, $vmid, $storecfg, $bridges, $devices);
 
     for (my $i = 0; $i < $MAX_NETS; $i++) {
          next if !$conf->{"net$i"};
@@ -6645,9 +6714,9 @@ sub generate_cloudinitconfig {
     mkdir "$path/drive/openstack";
     mkdir "$path/drive/openstack/latest";
     mkdir "$path/drive/openstack/content";
-    generate_cloudinit_userdata($conf, $path);
-    generate_cloudinit_metadata($conf, $path);
-    generate_cloudinit_network($conf, $path);
+    my $digest_data = generate_cloudinit_userdata($conf, $path)
+		    . generate_cloudinit_network($conf, $path);
+    generate_cloudinit_metadata($conf, $path, $digest_data);
 
     my $cmd = [];
     push @$cmd, 'genisoimage';
@@ -6658,10 +6727,18 @@ sub generate_cloudinitconfig {
 
     run_command($cmd);
     rmtree("$path/drive");
-    my $drive = PVE::QemuServer::parse_drive('ide3', 'cloudinit,media=cdrom');
-    $conf->{'ide3'} = PVE::QemuServer::print_drive($vmid, $drive);
-    update_config_nolock($vmid, $conf, 1);
+}
 
+sub generate_cloudinit_command {
+    my ($conf, $vmid, $storecfg, $bridges, $devices) = @_;
+
+    return if !$conf->{cloudinit};
+
+    my $path = "/tmp/cloudinit/$vmid/configdrive.iso";
+    my $drive = parse_drive('ide3', 'cloudinit,media=cdrom');
+    my $drive_cmd = print_drive_full($storecfg, $vmid, $drive);
+    push @$devices, '-drive', $drive_cmd;
+    push @$devices, '-device', print_drivedevice_full($storecfg, $conf, $vmid, $drive, $bridges);
 }
 
 sub generate_cloudinit_userdata {
@@ -6684,15 +6761,13 @@ sub generate_cloudinit_userdata {
 
     my $fn = "$path/drive/openstack/latest/user_data";
     file_write($fn, $content);
-
+    return $content;
 }
 
 sub generate_cloudinit_metadata {
-    my ($conf, $path) = @_;
+    my ($conf, $path, $digest_data) = @_;
 
-    my ($uuid, $uuid_str);
-    UUID::generate($uuid);
-    UUID::unparse($uuid, $uuid_str);
+    my $uuid_str = Digest::SHA::sha1_hex($digest_data);
 
     my $content = "{\n";   
     $content .= "     \"uuid\": \"$uuid_str\",\n";
@@ -6701,9 +6776,7 @@ sub generate_cloudinit_metadata {
 
     my $fn = "$path/drive/openstack/latest/meta_data.json";
 
-    return file_write($fn, $content);
-
-
+    file_write($fn, $content);
 }
 
 sub generate_cloudinit_network {
@@ -6712,19 +6785,33 @@ sub generate_cloudinit_network {
     my $content = "auto lo\n";
     $content .="iface lo inet loopback\n\n";
 
-    foreach my $opt (keys %$conf) {
-        next if $opt !~ m/^net(\d+)$/;
-        my $net = parse_net($conf->{$opt});
-	$opt =~ s/net/eth/;
+    my @ifaces = grep(/^net(\d+)$/, keys %$conf);
+    foreach my $iface (@ifaces) {
+	(my $id = $iface) =~ s/^net//;
+	next if !$conf->{"ipconfig$id"};
+        my $net = parse_ipconfig($conf->{"ipconfig$id"});
+	$id = "eth$id";
 
-	$content .="auto $opt\n";
+	$content .="auto $id\n";
 	if ($net->{address}) {
-	    $content .="iface $opt inet static\n";
-	    $content .="        address $net->{address}\n";
-	    $content .="        netmask $PVE::Network::ipv4_reverse_mask->[$net->{netmask}]\n";
-	    $content .="        gateway $net->{gateway}\n" if $net->{gateway};
-	} else {
-	    $content .="iface $opt inet dhcp\n";
+	    if ($net->{address} eq 'dhcp') {
+		$content .= "iface $id inet dhcp\n";
+	    } else {
+		$content .= "iface $id inet static\n";
+		$content .= "        address $net->{address}\n";
+		$content .= "        netmask $PVE::Network::ipv4_reverse_mask->[$net->{netmask}]\n";
+		$content .= "        gateway $net->{gateway}\n" if $net->{gateway};
+	    }
+	}
+	if ($net->{address6}) {
+	    if ($net->{address6} =~ /^(auto|dhcp)$/) {
+		$content .= "iface $id inet6 $1\n";
+	    } else {
+		$content .= "iface $id inet6 static\n";
+		$content .= "        address $net->{address6}\n";
+		$content .= "        netmask $net->{netmask6}\n";
+		$content .= "        gateway $net->{gateway6}\n" if $net->{gateway6};
+	    }
 	}
     }
 
@@ -6733,7 +6820,7 @@ sub generate_cloudinit_network {
 
     my $fn = "$path/drive/openstack/content/0000";
     file_write($fn, $content);
-
+    return $content;
 }
 
 1;
