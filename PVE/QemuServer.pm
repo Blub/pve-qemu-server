@@ -549,12 +549,6 @@ EODESCR
         type => 'string',
         description => "Ssh keys for root",
     },
-    cloudinit => {
-	optional => 1,
-	type => 'boolean',
-	description => "Enable cloudinit config generation.",
-	default => 0,
-    },
 };
 
 # what about other qemu settings ?
@@ -2428,11 +2422,6 @@ sub write_vm_config {
 	die "option ide2 conflicts with cdrom\n" if $conf->{ide2};
 	$conf->{ide2} = $conf->{cdrom};
 	delete $conf->{cdrom};
-    }
-
-    if ($conf->{cloudinit}) {
-	die "option cloudinit conflicts with ide3\n" if $conf->{ide3};
-	delete $conf->{cloudinit};
     }
 
     # we do not use 'smp' any longer
@@ -6701,10 +6690,70 @@ sub nbd_stop {
     vm_mon_cmd($vmid, 'nbd-server-stop');
 }
 
+# FIXME: Reasonable size? qcow2 shouldn't grow if the space isn't used anyway?
+my $cloudinit_iso_size = 5; # in MB
+
+sub prepare_cloudinit_disk {
+    my ($vmid, $storeid) = @_;
+
+    my $storecfg = PVE::Storage::config();
+    my $imagedir = PVE::Storage::get_image_dir($storecfg, $storeid, $vmid);
+    my $iso_name = "vm-$vmid-cloudinit.qcow2";
+    my $iso_path = "$imagedir/$iso_name";
+    if (!-e $iso_path) {
+	# vdisk_alloc size is in K
+	PVE::Storage::vdisk_alloc($storecfg, $storeid, $vmid, 'qcow2', $iso_name, $cloudinit_iso_size*1024);
+    }
+    return ($iso_path, 'qcow2');
+}
+
+# FIXME: also in LXCCreate.pm => move to pve-common
+sub next_free_nbd_dev {
+    
+    for(my $i = 0;;$i++) {
+	my $dev = "/dev/nbd$i";
+	last if ! -b $dev;
+	next if -f "/sys/block/nbd$i/pid"; # busy
+	return $dev;
+    }
+    die "unable to find free nbd device\n";
+}
+
+sub commit_cloudinit_disk {
+    my ($file_path, $iso_path, $format) = @_;
+
+    my $nbd_dev = next_free_nbd_dev();
+    run_command(['qemu-nbd', '-c', $nbd_dev, $iso_path, '-f', $format]);
+
+    eval {
+	run_command(['genisoimage',
+		     '-R',
+		     '-V', 'config-2',
+		     '-o', $nbd_dev,
+		     $file_path]);
+    };
+    my $err = $@;
+    eval { run_command(['qemu-nbd', '-d', $nbd_dev]); };
+    warn $@ if $@;
+    die $err if $err;
+}
+
+sub find_cloudinit_storage {
+    my ($conf, $vmid) = @_;
+    foreach my $ds (keys %$conf) {
+	next if !valid_drivename($ds);
+	if ($conf->{$ds} =~ m@^(?:volume=)?([^:]+):\Q$vmid\E/vm-\Q$vmid\E-cloudinit\.qcow2@) {
+	    return $1;
+	}
+    }
+    return undef;
+}
+
 sub generate_cloudinitconfig {
     my ($conf, $vmid) = @_;
 
-    return if !$conf->{cloudinit};
+    my $storeid = find_cloudinit_storage($conf, $vmid);
+    return if !$storeid;
 
     my $path = "/tmp/cloudinit/$vmid";
 
@@ -6718,14 +6767,8 @@ sub generate_cloudinitconfig {
 		    . generate_cloudinit_network($conf, $path);
     generate_cloudinit_metadata($conf, $path, $digest_data);
 
-    my $cmd = [];
-    push @$cmd, 'genisoimage';
-    push @$cmd, '-R';
-    push @$cmd, '-V', 'config-2';
-    push @$cmd, '-o', "$path/configdrive.iso";
-    push @$cmd, "$path/drive";
-
-    run_command($cmd);
+    my ($iso_path, $format) = prepare_cloudinit_disk($vmid, $storeid);
+    commit_cloudinit_disk("$path/drive", $iso_path, $format);
     rmtree("$path/drive");
 }
 
