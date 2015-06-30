@@ -6748,6 +6748,9 @@ sub generate_cloudinit_userdata {
     my $hostname = $conf->{searchdomain} ? $conf->{name}.".".$conf->{searchdomain} : $conf->{name};
     $content .= "fqdn: $hostname\n";
     $content .= "manage_etc_hosts: true\n";
+    $content .= "bootcmd: \n";
+    $content .= "  - ifdown -a\n";
+    $content .= "  - ifup -a\n";
 
     if ($conf->{sshkey}) {
 	$content .= "users:\n";
