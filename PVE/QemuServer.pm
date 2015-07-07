@@ -1299,8 +1299,6 @@ sub get_iso_path {
 	return get_cdrom_path();
     } elsif ($cdrom eq 'none') {
 	return '';
-    } elsif ($cdrom eq 'cloudinit') {
-	return "/tmp/cloudinit/$vmid/configdrive.iso";
     } elsif ($cdrom =~ m|^/|) {
 	return $cdrom;
     } else {
@@ -1312,7 +1310,7 @@ sub get_iso_path {
 sub filename_to_volume_id {
     my ($vmid, $file, $media) = @_;
 
-     if (!($file eq 'none' || $file eq 'cdrom' || $file eq 'cloudinit' ||
+     if (!($file eq 'none' || $file eq 'cdrom' ||
 	  $file =~ m|^/dev/.+| || $file =~ m/^([^:]+):(.+)$/)) {
 
 	return undef if $file =~ m|/|;
@@ -3477,8 +3475,6 @@ sub config_to_command {
 	push @$devices, '-drive',$drive_cmd;
 	push @$devices, '-device', print_drivedevice_full($storecfg, $conf, $vmid, $drive, $bridges);
     });
-
-    generate_cloudinit_command($conf, $vmid, $storecfg, $bridges, $devices);
 
     for (my $i = 0; $i < $MAX_NETS; $i++) {
          next if !$conf->{"net$i"};
@@ -6690,23 +6686,6 @@ sub nbd_stop {
     vm_mon_cmd($vmid, 'nbd-server-stop');
 }
 
-# FIXME: Reasonable size? qcow2 shouldn't grow if the space isn't used anyway?
-my $cloudinit_iso_size = 5; # in MB
-
-sub prepare_cloudinit_disk {
-    my ($vmid, $storeid) = @_;
-
-    my $storecfg = PVE::Storage::config();
-    my $imagedir = PVE::Storage::get_image_dir($storecfg, $storeid, $vmid);
-    my $iso_name = "vm-$vmid-cloudinit.qcow2";
-    my $iso_path = "$imagedir/$iso_name";
-    if (!-e $iso_path) {
-	# vdisk_alloc size is in K
-	PVE::Storage::vdisk_alloc($storecfg, $storeid, $vmid, 'qcow2', $iso_name, $cloudinit_iso_size*1024);
-    }
-    return ($iso_path, 'qcow2');
-}
-
 # FIXME: also in LXCCreate.pm => move to pve-common
 sub next_free_nbd_dev {
     
@@ -6738,51 +6717,38 @@ sub commit_cloudinit_disk {
     die $err if $err;
 }
 
-sub find_cloudinit_storage {
-    my ($conf, $vmid) = @_;
-    foreach my $ds (keys %$conf) {
-	next if !valid_drivename($ds);
-	if ($conf->{$ds} =~ m@^(?:volume=)?([^:]+):\Q$vmid\E/vm-\Q$vmid\E-cloudinit\.qcow2@) {
-	    return $1;
-	}
-    }
-    return undef;
-}
-
 sub generate_cloudinitconfig {
     my ($conf, $vmid) = @_;
 
-    my $storeid = find_cloudinit_storage($conf, $vmid);
-    return if !$storeid;
+    foreach_drive($conf, sub {
+        my ($ds, $drive) = @_;
 
-    my $path = "/tmp/cloudinit/$vmid";
+	my ($storeid, $volname) = PVE::Storage::parse_volume_id($drive->{file}, 1);
 
-    mkdir "/tmp/cloudinit";
-    mkdir $path;
-    mkdir "$path/drive";
-    mkdir "$path/drive/openstack";
-    mkdir "$path/drive/openstack/latest";
-    mkdir "$path/drive/openstack/content";
-    my $digest_data = generate_cloudinit_userdata($conf, $path)
-		    . generate_cloudinit_network($conf, $path);
-    generate_cloudinit_metadata($conf, $path, $digest_data);
+	return if $volname !~ m/vm-$vmid-cloudinit/;
 
-    my ($iso_path, $format) = prepare_cloudinit_disk($vmid, $storeid);
-    commit_cloudinit_disk("$path/drive", $iso_path, $format);
-    rmtree("$path/drive");
+	my $path = "/tmp/cloudinit/$vmid";
+
+	mkdir "/tmp/cloudinit";
+	mkdir $path;
+	mkdir "$path/drive";
+	mkdir "$path/drive/openstack";
+	mkdir "$path/drive/openstack/latest";
+	mkdir "$path/drive/openstack/content";
+	my $digest_data = generate_cloudinit_userdata($conf, $path)
+			. generate_cloudinit_network($conf, $path);
+	generate_cloudinit_metadata($conf, $path, $digest_data);
+
+	my $storecfg = PVE::Storage::config();
+	my $iso_path = PVE::Storage::path($storecfg, $drive->{file});
+	my $scfg = PVE::Storage::storage_config($storecfg, $storeid);
+	my $format = qemu_img_format($scfg, $volname);
+	#fixme : add meta as drive property to compare
+	commit_cloudinit_disk("$path/drive", $iso_path, $format);
+	rmtree("$path/drive");
+    });
 }
 
-sub generate_cloudinit_command {
-    my ($conf, $vmid, $storecfg, $bridges, $devices) = @_;
-
-    return if !$conf->{cloudinit};
-
-    my $path = "/tmp/cloudinit/$vmid/configdrive.iso";
-    my $drive = parse_drive('ide3', 'cloudinit,media=cdrom');
-    my $drive_cmd = print_drive_full($storecfg, $vmid, $drive);
-    push @$devices, '-drive', $drive_cmd;
-    push @$devices, '-device', print_drivedevice_full($storecfg, $conf, $vmid, $drive, $bridges);
-}
 
 sub generate_cloudinit_userdata {
     my ($conf, $path) = @_;

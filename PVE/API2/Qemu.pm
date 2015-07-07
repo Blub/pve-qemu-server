@@ -64,7 +64,9 @@ my $check_storage_access = sub {
 
 	my $volid = $drive->{file};
 
-	if (!$volid || $volid eq 'none') {
+	if (!$volid || ($volid eq 'none' || $volid eq 'cloudinit')) {
+	    # nothing to check
+	} elsif ($volid =~ m/^(([^:\s]+):)?(cloudinit)$/) {
 	    # nothing to check
 	} elsif ($isCDROM && ($volid eq 'cdrom')) {
 	    $rpcenv->check($authuser, "/", ['Sys.Console']);
@@ -141,6 +143,28 @@ my $create_disks = sub {
 	if (!$volid || $volid eq 'none' || $volid eq 'cdrom') {
 	    delete $disk->{size};
 	    $res->{$ds} = PVE::QemuServer::print_drive($vmid, $disk);
+	} elsif ($volid =~ m!^(?:([^/:\s]+):)?cloudinit$!) {
+	    my $storeid = $1 || $default_storage;
+	    die "no storage ID specified (and no default storage)\n" if !$storeid;
+	    my $scfg = PVE::Storage::storage_config($storecfg, $storeid);
+	    my $name = "vm-$vmid-cloudinit";
+	    my $fmt = undef;
+	    if ($scfg->{path}) {
+		$name .= ".qcow2";
+		$fmt = 'qcow2';
+	    }else{
+		$fmt = 'raw';
+	    }
+	    # FIXME: Reasonable size? qcow2 shouldn't grow if the space isn't used anyway?
+	    my $cloudinit_iso_size = 5; # in MB
+	    my $volid = PVE::Storage::vdisk_alloc($storecfg, $storeid, $vmid, 
+						  $fmt, $name, $cloudinit_iso_size*1024);
+	    $disk->{file} = $volid;
+	    $disk->{media} = 'cdrom';
+	    push @$vollist, $volid;
+	    delete $disk->{format}; # no longer needed
+	    $res->{$ds} = PVE::QemuServer::print_drive($vmid, $disk);
+	
 	} elsif ($volid =~ $NEW_DISK_RE) {
 	    my ($storeid, $size) = ($2 || $default_storage, $3);
 	    die "no storage ID specified (and no default storage)\n" if !$storeid;
