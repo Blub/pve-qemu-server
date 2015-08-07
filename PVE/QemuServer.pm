@@ -6690,7 +6690,6 @@ sub nbd_stop {
     vm_mon_cmd($vmid, 'nbd-server-stop');
 }
 
-# FIXME: also in LXCCreate.pm => move to pve-common
 sub next_free_nbd_dev {
     
     for(my $i = 0;;$i++) {
