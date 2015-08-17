@@ -157,6 +157,9 @@ my $create_disks = sub {
 	    }
 	    # FIXME: Reasonable size? qcow2 shouldn't grow if the space isn't used anyway?
 	    my $cloudinit_iso_size = 5; # in MB
+	    eval { # delete old images if they exist
+		PVE::Storage::vdisk_free($storecfg, "$storeid:$vmid/$name");
+	    }; # ignore errors
 	    my $volid = PVE::Storage::vdisk_alloc($storecfg, $storeid, $vmid, 
 						  $fmt, $name, $cloudinit_iso_size*1024);
 	    $disk->{file} = $volid;
@@ -164,7 +167,6 @@ my $create_disks = sub {
 	    push @$vollist, $volid;
 	    delete $disk->{format}; # no longer needed
 	    $res->{$ds} = PVE::QemuServer::print_drive($vmid, $disk);
-	
 	} elsif ($volid =~ $NEW_DISK_RE) {
 	    my ($storeid, $size) = ($2 || $default_storage, $3);
 	    die "no storage ID specified (and no default storage)\n" if !$storeid;
@@ -1087,6 +1089,7 @@ my $update_vm_api  = sub {
 
 		if (PVE::QemuServer::is_valid_drivename($opt)) {
 		    my $drive = PVE::QemuServer::parse_drive($opt, $param->{$opt});
+		    # FIXME: cloudinit: CDROM or Disk?
 		    if (PVE::QemuServer::drive_is_cdrom($drive)) { # CDROM
 			$rpcenv->check_vm_perm($authuser, $vmid, undef, ['VM.Config.CDROM']);
 		    } else {
