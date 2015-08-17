@@ -318,7 +318,7 @@ my $check_vm_modify_config_perm = sub {
 	    $rpcenv->check_vm_perm($authuser, $vmid, $pool, ['VM.PowerMgmt']);
 	} elsif ($diskoptions->{$opt}) {
 	    $rpcenv->check_vm_perm($authuser, $vmid, $pool, ['VM.Config.Disk']);
-	} elsif ($opt =~ m/^net\d+$/) {
+	} elsif ($opt =~ m/^(?:net|ipconfig)\d+$/) {
 	    $rpcenv->check_vm_perm($authuser, $vmid, $pool, ['VM.Config.Network']);
 	} else {
 	    # catches usb\d+, hostpci\d+, args, lock, etc.
