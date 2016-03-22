@@ -108,7 +108,7 @@ my $cpudesc = {
     },
 };
 
-my $confdesc = {
+our $confdesc = {
     onboot => {
 	optional => 1,
 	type => 'boolean',

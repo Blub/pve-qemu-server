@@ -799,9 +799,11 @@ my $update_vm_api  = sub {
 
     my $revert_str = extract_param($param, 'revert');
 
+    my $modify_str = extract_param($param, 'modify');
+
     my $force = extract_param($param, 'force');
 
-    die "no options specified\n" if !$delete_str && !$revert_str && !scalar(keys %$param);
+    die "no options specified\n" if !$delete_str && !$revert_str && !scalar(keys %$param) && !$modify_str;
 
     my $storecfg = PVE::Storage::config();
 
@@ -823,6 +825,43 @@ my $update_vm_api  = sub {
 
 	$revert->{$opt} = 1;
     }
+    
+    my $modifications = {};
+    foreach my $opt (split(/,/, $modify_str)) {
+	if ($opt =~ /^(-)?([^.]+)\.([^=]+)(=(\S+))?$/) {
+	    my ($delete, $key, $subkey, $hasvalue, $value) = ($1, $2, $3, $4, $5);
+	    raise_param_exc({ modify => "option $opt must contain a value or be marked for removal" })
+		if !$delete && !$hasvalue;
+
+	    raise_param_exc({ modify => "you can't use '-$key' and " .
+			      "-modify $key' at the same time" })
+		if defined($param->{$key});
+
+	    raise_param_exc({ modify => "you can't use '-modify $key' and " .
+			      "-revert $key' at the same time" })
+		if $revert->{$key};
+
+	    my $mod = ($modifications->{$key} //= { subkeys => {} });
+
+	    raise_param_exc({ modify => "option $key.$subkey passed multiple times" })
+		if $mod->{subkeys}->{$subkey};
+
+	    if (!$mod->{format}) {
+		my $desc = $PVE::QemuServer::confdesc->{$key};
+		my $fmt = $desc->{format};
+		$fmt = PVE::JSONSchema::get_format($fmt) if !ref($fmt);
+		raise_param_exc({ modify => "$key is not a property list" })
+		    if !$fmt || !ref($fmt) || ref($fmt) ne 'HASH';
+		$mod->{format} = $fmt;
+	    }
+	    $mod->{subkeys}->{$subkey} = {
+		delete => $delete,
+		value => $value
+	    };
+	} else {
+	    raise_param_exc({ modify => "cannot parse modification option: $opt" });
+	}
+    }
 
     my @delete = ();
     foreach my $opt (PVE::Tools::split_list($delete_str)) {
@@ -835,6 +874,10 @@ my $update_vm_api  = sub {
 	raise_param_exc({ revert => "you can't use '-delete $opt' and " .
 			      "-revert $opt' at the same time" })
 	    if $revert->{$opt};
+
+	raise_param_exc({ modify => "you can't use '-delete $opt' and " .
+			      "-modify $opt' at the same time" })
+	    if $modifications->{$opt};
 
 	if (!PVE::QemuServer::option_exists($opt)) {
 	    raise_param_exc({ delete => "unknown option '$opt'" });
@@ -859,6 +902,7 @@ my $update_vm_api  = sub {
     &$check_vm_modify_config_perm($rpcenv, $authuser, $vmid, undef, [@delete]);
 
     &$check_vm_modify_config_perm($rpcenv, $authuser, $vmid, undef, [keys %$param]);
+    &$check_vm_modify_config_perm($rpcenv, $authuser, $vmid, undef, [keys %$modifications]);
 
     &$check_storage_access($rpcenv, $authuser, $storecfg, $vmid, $param);
 
@@ -919,6 +963,27 @@ my $update_vm_api  = sub {
 		    PVE::QemuServer::vmconfig_delete_pending_option($conf, $opt, $force);
 		    PVE::QemuConfig->write_config($vmid, $conf);
 		}
+	    }
+
+	    foreach my $opt (keys %$modifications) { # modify
+		$modified->{$opt} = 1;
+		$conf = PVE::QemuConfig->load_config($vmid); # update/reload
+		my $old = $conf->{$opt};
+
+		my $mod = $modifications->{$opt};
+		my $format = $mod->{format};
+		my $data = PVE::JSONSchema::parse_property_string($format, $old);
+		my $subkeys = $mod->{subkeys};
+		foreach my $subkey (keys %$subkeys) {
+		    my $change = $subkeys->{$subkey};
+		    if ($change->{delete}) {
+			delete $data->{$subkey};
+		    } else {
+			$data->{$subkey} = $change->{value};
+		    }
+		}
+		# Just assign to $param and let the add/change loop below do its thing
+		$param->{$opt} = PVE::JSONSchema::print_property_string($data, $format);
 	    }
 
 	    foreach my $opt (keys %$param) { # add/change
@@ -1047,6 +1112,14 @@ __PACKAGE__->register_method({
 		    optional => 1,
 		    requires => 'delete',
 		},
+		modify => {
+		    type => 'string',
+		    description => "A list of updates to do to existing property string values. " .
+				   "These are comma separated entries of the form 'key.subkey=value' " .
+				   "or '-key.subkey'. This will take the property string value 'key' " .
+				   "from the existing config and change its 'subkey' to 'value'.",
+		    optional => 1,
+		},
 		digest => {
 		    type => 'string',
 		    description => 'Prevent changes if current configuration file has different SHA1 digest. This can be used to prevent concurrent modifications.',
@@ -1101,6 +1174,14 @@ __PACKAGE__->register_method({
 		    description => $opt_force_description,
 		    optional => 1,
 		    requires => 'delete',
+		},
+		modify => {
+		    type => 'string',
+		    description => "A list of updates to do to existing property string values. " .
+				   "These are comma separated entries of the form 'key.subkey=value' " .
+				   "or '-key.subkey'. This will take the property string value 'key' " .
+				   "from the existing config and change its 'subkey' to 'value'.",
+		    optional => 1,
 		},
 		digest => {
 		    type => 'string',
