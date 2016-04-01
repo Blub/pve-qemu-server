@@ -713,10 +713,44 @@ my $netdesc = {
 
 PVE::JSONSchema::register_standard_option("pve-qm-net", $netdesc);
 
+my $ipconfig_fmt = {
+    ip => {
+	type => 'string',
+	format => 'pve-ipv4-config',
+	format_description => 'IPv4Format/CIDR',
+	description => 'IPv4 address in CIDR format.',
+	optional => 1,
+	default => 'dhcp',
+    },
+    gw => {
+	type => 'string',
+	format => 'ipv4',
+	format_description => 'GatewayIPv4',
+	description => 'Default gateway for IPv4 traffic.',
+	optional => 1,
+	requires => 'ip',
+    },
+    ip6 => {
+	type => 'string',
+	format => 'pve-ipv6-config',
+	format_description => 'IPv6Format/CIDR',
+	description => 'IPv6 address in CIDR format.',
+	optional => 1,
+	default => 'dhcp',
+    },
+    gw6 => {
+	type => 'string',
+	format => 'ipv6',
+	format_description => 'GatewayIPv6',
+	description => 'Default gateway for IPv6 traffic.',
+	optional => 1,
+	requires => 'ip6',
+    },
+};
+PVE::JSONSchema::register_format('pve-qm-ipconfig', $ipconfig_fmt);
 my $ipconfigdesc = {
     optional => 1,
     type => 'string', format => 'pve-qm-ipconfig',
-    typetext => "[ip=IPv4_CIDR[,gw=IPv4_GATEWAY]][,ip6=IPv6_CIDR[,gw6=IPv6_GATEWAY]]",
     description => <<'EODESCR',
 Specify IP addresses and gateways for the corresponding interface.
 
@@ -1927,49 +1961,32 @@ sub parse_net {
 sub parse_ipconfig {
     my ($data) = @_;
 
-    my $res = {};
-
-    foreach my $kvp (split(/,/, $data)) {
-	if ($kvp =~ m/^ip=dhcp$/) {
-	    $res->{address} = 'dhcp';
-	} elsif ($kvp =~ m/^ip=($IPV4RE)\/(\d+)$/) {
-	    $res->{address} = $1;
-	    $res->{netmask} = $2;
-	} elsif ($kvp =~ m/^gw=($IPV4RE)$/) {
-	    $res->{gateway} = $1;
-	} elsif ($kvp =~ m/^ip6=dhcp6?$/) {
-	    $res->{address6} = 'dhcp';
-	} elsif ($kvp =~ m/^ip6=auto$/) {
-	    $res->{address6} = 'auto';
-	} elsif ($kvp =~ m/^ip6=($IPV6RE)\/(\d+)$/) {
-	    $res->{address6} = $1;
-	    $res->{netmask6} = $2;
-	} elsif ($kvp =~ m/^gw6=($IPV6RE)$/) {
-	    $res->{gateway6} = $1;
-	} else {
-	    return undef;
-	}
+    my $res = eval { PVE::JSONSchema::parse_property_string($ipconfig_fmt, $data) };
+    if ($@) {
+	warn $@;
+	return undef;
     }
 
-    if ($res->{gateway} && !$res->{address}) {
+    if ($res->{gw} && !$res->{ip}) {
 	warn 'gateway specified without specifying an IP address';
 	return undef;
     }
-    if ($res->{gateway6} && !$res->{address6}) {
+    if ($res->{gw6} && !$res->{ip6}) {
 	warn 'IPv6 gateway specified without specifying an IPv6 address';
 	return undef;
     }
-    if ($res->{gateway} && $res->{address} eq 'dhcp') {
+    if ($res->{gw} && $res->{ip} eq 'dhcp') {
 	warn 'gateway specified together with DHCP';
 	return undef;
     }
-    if ($res->{gateway6} && $res->{address6} eq 'dhcp') {
-	warn 'IPv6 gateway specified together with DHCP6';
+    if ($res->{gw6} && $res->{ip6} !~ /^$IPV6RE/) {
+	# gw6 + auto/dhcp
+	warn "IPv6 gateway specified together with $res->{ip6} address";
 	return undef;
     }
 
-    if (!$res->{address} && !$res->{address6}) {
-	return { address => 'dhcp' };
+    if (!$res->{ip} && !$res->{ip6}) {
+	return { ip => 'dhcp', ip6 => 'dhcp' };
     }
 
     return $res;
@@ -2159,17 +2176,6 @@ sub verify_bootdisk {
     return undef if $noerr;
 
     die "invalid boot disk '$value'\n";
-}
-
-PVE::JSONSchema::register_format('pve-qm-ipconfig', \&verify_ipconfig);
-sub verify_ipconfig {
-    my ($value, $noerr) = @_;
-
-    return $value if parse_ipconfig($value);
-
-    return undef if $noerr;
-
-    die "unable to parse ipconfig options\n";
 }
 
 sub parse_watchdog {
@@ -6840,24 +6846,26 @@ sub generate_cloudinit_network {
 	$id = "eth$id";
 
 	$content .="auto $id\n";
-	if ($net->{address}) {
-	    if ($net->{address} eq 'dhcp') {
+	if ($net->{ip}) {
+	    if ($net->{ip} eq 'dhcp') {
 		$content .= "iface $id inet dhcp\n";
 	    } else {
+		my ($addr, $mask) = split('/', $net->{ip});
 		$content .= "iface $id inet static\n";
-		$content .= "        address $net->{address}\n";
-		$content .= "        netmask $PVE::Network::ipv4_reverse_mask->[$net->{netmask}]\n";
-		$content .= "        gateway $net->{gateway}\n" if $net->{gateway};
+		$content .= "        address $addr\n";
+		$content .= "        netmask $PVE::Network::ipv4_reverse_mask->[$mask]\n";
+		$content .= "        gateway $net->{gw}\n" if $net->{gw};
 	    }
 	}
-	if ($net->{address6}) {
-	    if ($net->{address6} =~ /^(auto|dhcp)$/) {
+	if ($net->{ip6}) {
+	    if ($net->{ip6} =~ /^(auto|dhcp)$/) {
 		$content .= "iface $id inet6 $1\n";
 	    } else {
+		my ($addr, $mask) = split('/', $net->{ip6});
 		$content .= "iface $id inet6 static\n";
-		$content .= "        address $net->{address6}\n";
-		$content .= "        netmask $net->{netmask6}\n";
-		$content .= "        gateway $net->{gateway6}\n" if $net->{gateway6};
+		$content .= "        address $addr\n";
+		$content .= "        netmask $mask\n";
+		$content .= "        gateway $net->{gw6}\n" if $net->{gw6};
 	    }
 	}
     }
