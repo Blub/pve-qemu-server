@@ -546,7 +546,7 @@ my $confdesc_cloudinit = {
     },
     nameserver => {
 	optional => 1,
-	type => 'string',
+	type => 'string', format => 'address-list',
 	description => "cloud-init: Sets DNS server IP address for a container. Create will automatically use the setting from the host if neither searchdomain nor nameserver are set.",
     },
     sshkey => {
