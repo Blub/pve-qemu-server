@@ -540,19 +540,19 @@ EODESCR
 
 my $confdesc_cloudinit = {
     searchdomain => {
-        optional => 1,
-        type => 'string',
-        description => "Sets DNS search domains for a container. Create will automatically use the setting from the host if you neither set searchdomain or nameserver.",
+	optional => 1,
+	type => 'string',
+	description => "cloud-init: Sets DNS search domains for a container. Create will automatically use the setting from the host if neither searchdomain nor nameserver are set.",
     },
     nameserver => {
-        optional => 1,
-        type => 'string',
-        description => "Sets DNS server IP address for a container. Create will automatically use the setting from the host if you neither set searchdomain or nameserver.",
+	optional => 1,
+	type => 'string',
+	description => "cloud-init: Sets DNS server IP address for a container. Create will automatically use the setting from the host if neither searchdomain nor nameserver are set.",
     },
     sshkey => {
-        optional => 1,
-        type => 'string',
-        description => "Ssh keys for root",
+	optional => 1,
+	type => 'string',
+	description => "cloud-init: ssh keys for root",
     },
 };
 
