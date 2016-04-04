@@ -554,6 +554,12 @@ my $confdesc_cloudinit = {
 	type => 'string',
 	description => "cloud-init: ssh keys for root",
     },
+    hostname => {
+	optional => 1,
+	description => "cloud-init: Hostname to use instead of the vm-name + search-domain.",
+	type => 'string', format => 'dns-name',
+	maxLength => 255,
+    },
 };
 
 # what about other qemu settings ?
@@ -6801,7 +6807,13 @@ sub generate_cloudinit_userdata {
     my ($conf, $path) = @_;
 
     my $content = "#cloud-config\n";
-    my $hostname = $conf->{searchdomain} ? $conf->{name}.".".$conf->{searchdomain} : $conf->{name};
+    my $hostname = $conf->{hostname};
+    if (!defined($hostname)) {
+	$hostname = $conf->{name};
+	if (my $search = $conf->{searchdomain}) {
+	    $hostname .= ".$search";
+	}
+    }
     $content .= "fqdn: $hostname\n";
     $content .= "manage_etc_hosts: true\n";
     $content .= "bootcmd: \n";
