@@ -6876,8 +6876,8 @@ sub generate_cloudinit_network {
 	}
     }
 
-    $content .="        dns-nameservers $conf->{nameserver}\n" if $conf->{nameserver};
-    $content .="        dns-search $conf->{searchdomain}\n" if $conf->{searchdomain};
+    $content .="        dns_nameservers $conf->{nameserver}\n" if $conf->{nameserver};
+    $content .="        dns_search $conf->{searchdomain}\n" if $conf->{searchdomain};
 
     my $fn = "$path/drive/openstack/content/0000";
     file_write($fn, $content);
