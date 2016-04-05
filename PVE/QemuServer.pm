@@ -551,7 +551,8 @@ my $confdesc_cloudinit = {
     },
     sshkey => {
 	optional => 1,
-	type => 'string',
+	type => 'string', format => 'urlencoded',
+	maxLength => 1024,
 	description => "cloud-init: ssh keys for root",
     },
     hostname => {
@@ -6820,12 +6821,19 @@ sub generate_cloudinit_userdata {
     $content .= "  - ifdown -a\n";
     $content .= "  - ifup -a\n";
 
-    if ($conf->{sshkey}) {
+    my $keys = $conf->{sshkey};
+    if ($keys) {
+	$keys = URI::Escape::uri_unescape($keys);
+	$keys = [map { chomp $_; $_ } split(/\n/, $keys)];
+	$keys = [grep { /\S/ } @$keys];
+
 	$content .= "users:\n";
 	$content .= "  - default\n";
 	$content .= "  - name: root\n";
 	$content .= "    ssh-authorized-keys:\n";
-	$content .= "      - $conf->{sshkey}\n";
+	foreach my $k (@$keys) {
+	    $content .= "      - $k\n";
+	}
     }
 
     $content .= "package_upgrade: true\n";
