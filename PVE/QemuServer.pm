@@ -6779,7 +6779,7 @@ sub generate_cloudinitconfig {
 
 	my ($storeid, $volname) = PVE::Storage::parse_volume_id($drive->{file}, 1);
 
-	return if $volname !~ m/vm-$vmid-cloudinit/;
+	return if !$volname || $volname !~ m/vm-$vmid-cloudinit/;
 
 	my $path = "/tmp/cloudinit/$vmid";
 
