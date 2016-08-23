@@ -310,11 +310,11 @@ sub sync_disks {
 
 	    if (defined($snapname)) {
 		# we cannot migrate shapshots on local storage
-		# exceptions: 'zfspool' or 'qcow2' files (on directory storage)
+		# exceptions: 'zfspool', 'btrfs' or 'qcow2' files (on directory storage)
 
 		my $format = PVE::QemuServer::qemu_img_format($scfg, $volname);
 		die "online storage migration not possible if snapshot exists\n" if $self->{running};
-		if (!($scfg->{type} eq 'zfspool' || $format eq 'qcow2')) {
+		if (!($scfg->{type} eq 'zfspool' || $scfg->{type} eq 'btrfs' || $format eq 'qcow2')) {
 		    die "non-migratable snapshot exists\n";
 		}
 	    }
@@ -378,7 +378,8 @@ sub sync_disks {
 	    my $scfg =  PVE::Storage::storage_config($self->{storecfg}, $sid);
 
 	    my $migratable = ($scfg->{type} eq 'dir') || ($scfg->{type} eq 'zfspool') ||
-		($scfg->{type} eq 'lvmthin') || ($scfg->{type} eq 'lvm');
+		($scfg->{type} eq 'lvmthin') || ($scfg->{type} eq 'lvm' ||
+		($scfg->{type} eq 'btrfs'));
 
 	    die "can't migrate '$volid' - storage type '$scfg->{type}' not supported\n"
 		if !$migratable;
