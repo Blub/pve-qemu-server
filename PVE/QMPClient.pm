@@ -83,6 +83,31 @@ sub queue_cmd {
     return undef;
 }
 
+# hack: monitor sometime blocks
+my $cmd_timeouts = {
+    eject => 60, # note: cdrom mount command is slow
+    change => 60, # used for vnc
+    'query-migrate' => 60*60, # 1 hour
+    # freeze syncs all guest FS, if we kill it it stays in an unfreezable
+    # locked state with high probability, so use an generous timeout
+    'guest-fsfreeze-freeze' => 60*60, # 1 hour
+    # thaw has no possible long blocking actions, either it returns
+    # instantly or never (dead locked)
+    'guest-fsfreeze-thaw' => 10,
+    # all of these get 10 minutes for some reason
+    'savevm-start' => 10*60,
+    'savevm-end' => 10*60,
+    'query-backup' => 10*60,
+    'query-block-jobs' => 10*60,
+    'block-job-cancel' => 10*60,
+    'block-job-complete' => 10*60,
+    'backup-cancel' => 10*60,
+    'query-savevm' => 10*60,
+    'delete-drive-snapshot' => 10*60,
+    'guest-shutdown' => 10*60,
+    'snapshot-drive' => 10*60,
+};
+
 # execute a single command
 sub cmd {
     my ($self, $vmid, $cmd, $timeout) = @_;
@@ -101,36 +126,7 @@ sub cmd {
 
     my $queue_info = &$push_cmd_to_queue($self, $vmid, $cmd);
 
-    if (!$timeout) {
-	# hack: monitor sometime blocks
-	if ($cmd->{execute} eq 'query-migrate') {
-	    $timeout = 60*60; # 1 hour
-	} elsif ($cmd->{execute} =~ m/^(eject|change)/) {
-	    $timeout = 60; # note: cdrom mount command is slow
-	} elsif ($cmd->{execute} eq 'guest-fsfreeze-freeze') {
-	    # freeze syncs all guest FS, if we kill it it stays in an unfreezable
-	    # locked state with high probability, so use an generous timeout
-	    $timeout = 60*60; # 1 hour
-	} elsif ($cmd->{execute} eq 'guest-fsfreeze-thaw') {
-	    # thaw has no possible long blocking actions, either it returns
-	    # instantly or never (dead locked)
-	    $timeout = 10;
-	} elsif ($cmd->{execute} eq 'savevm-start' ||
-		 $cmd->{execute} eq 'savevm-end' ||
-		 $cmd->{execute} eq 'query-backup' ||
-		 $cmd->{execute} eq 'query-block-jobs' ||
-		 $cmd->{execute} eq 'block-job-cancel' ||
-		 $cmd->{execute} eq 'block-job-complete' ||
-		 $cmd->{execute} eq 'backup-cancel' ||
-		 $cmd->{execute} eq 'query-savevm' ||
-		 $cmd->{execute} eq 'delete-drive-snapshot' || 
-		 $cmd->{execute} eq 'guest-shutdown' ||
-		 $cmd->{execute} eq 'snapshot-drive'  ) {
-	    $timeout = 10*60; # 10 mins ?
-	} else {
-	    $timeout = 3; # default
-	}
-    }
+    $timeout = $timeout || $cmd_timeouts->{$cmd->{execute}} || 3;
 
     $self->queue_execute($timeout, 2);
 
