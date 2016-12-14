@@ -37,18 +37,18 @@ sub get_numa_guest_to_host_map {
     return map { $_ => $_ } (0..($sockets-1));
 }
 
-sub foreach_dimm{
+sub foreach_dimm {
     my ($conf, $vmid, $memory, $sockets, $func) = @_;
 
     my $dimm_id = 0;
     my $current_size = 0;
     my $dimm_size = 0;
 
-    if($conf->{hugepages} && $conf->{hugepages} == 1024) {
-	$current_size = 1024 * $sockets;
+    if($conf->{hugepages} && $conf->{hugepages} eq '1024') {
+	$current_size = $STATICMEM * $sockets;
 	$dimm_size = 1024;
     } else {
-	$current_size = 1024;
+	$current_size = $STATICMEM;
 	$dimm_size = 512;
     }
 
@@ -76,7 +76,7 @@ sub foreach_reverse_dimm {
     my $current_size = 0;
     my $dimm_size = 0;
 
-    if($conf->{hugepages} && $conf->{hugepages} == 1024) {
+    if($conf->{hugepages} && $conf->{hugepages} eq '1024') {
 	$current_size = 8355840;
 	$dimm_size = 131072;
     } else {
@@ -114,7 +114,7 @@ sub qemu_memory_hotplug {
     return $value if $value == $memory;
 
     my $static_memory = $STATICMEM;
-    $static_memory = $static_memory * $sockets if ($conf->{hugepages} && $conf->{hugepages} == 1024);
+    $static_memory *= $sockets if ($conf->{hugepages} && $conf->{hugepages} eq '1024');
 
     die "memory can't be lower than $static_memory MB" if $value < $static_memory;
     die "you cannot add more memory than $MAX_MEM MB!\n" if $memory > $MAX_MEM;
@@ -226,7 +226,7 @@ sub config {
 	$sockets = $conf->{sockets} if $conf->{sockets};
 
 	$static_memory = $STATICMEM;
-	$static_memory = $static_memory * $sockets if ($conf->{hugepages} && $conf->{hugepages} == 1024);
+	$static_memory *= $sockets if ($conf->{hugepages} && $conf->{hugepages} eq '1024');
 
 	die "minimum memory must be ${static_memory}MB\n" if($memory < $static_memory);
 	push @$cmd, '-m', "size=${static_memory},slots=255,maxmem=${MAX_MEM}M";
@@ -435,7 +435,7 @@ sub hugepages_topology {
 
     if ($hotplug_features->{memory}) {
 	$static_memory = $STATICMEM;
-	$static_memory = $static_memory * $sockets if ($conf->{hugepages} && $conf->{hugepages} == 1024);
+	$static_memory *= $sockets if ($conf->{hugepages} && $conf->{hugepages} eq '1024');
     } else {
 	$static_memory = $memory;
     }
