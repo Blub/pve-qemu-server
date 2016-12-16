@@ -101,6 +101,52 @@ sub foreach_reverse_dimm {
     }
 }
 
+sub qemu_add_dimm {
+    my ($vmid, $conf, $numa_hostmap, $numanode, $dimm_size, $name) = @_;
+
+    use integer;
+
+    if ($conf->{hugepages}) {
+	my $hugepages_size = hugepages_size($conf, $dimm_size);
+	my $path = hugepages_mount_path($hugepages_size);
+	my $host_numanode = $numa_hostmap->{$numanode};
+	my $hugepages_topology->{$hugepages_size}->{$host_numanode} = hugepages_nr($dimm_size, $hugepages_size);
+
+	my $code = sub {
+	    my $hugepages_host_topology = hugepages_host_topology();
+	    hugepages_allocate($hugepages_topology, $hugepages_host_topology);
+
+	    eval {
+		PVE::QemuServer::vm_mon_cmd($vmid, "object-add",
+		    'qom-type' => "memory-backend-file",
+		    id => "mem-$name",
+		    props => {
+			size => $dimm_size*(1024*1024),
+			'mem-path' => $path,
+			share => JSON::true,
+			prealloc => JSON::true
+		    }
+		);
+	    };
+	    if (my $err = $@) {
+		hugepages_reset($hugepages_host_topology);
+		die $err;
+	    }
+
+	    hugepages_pre_deallocate($hugepages_topology);
+	};
+	hugepages_update_locked($code);
+    } else {
+	PVE::QemuServer::vm_mon_cmd($vmid, "object-add",
+	    'qom-type' => "memory-backend-ram",
+	    id => "mem-$name",
+	    props => {
+		size => $dimm_size*(1024*1024)
+	    }
+	);
+    }
+}
+
 sub qemu_memory_hotplug {
     my ($vmid, $conf, $defaults, $opt, $value) = @_;
 
@@ -128,32 +174,9 @@ sub qemu_memory_hotplug {
 
 		return if $current_size <= $conf->{memory};
 
-		if ($conf->{hugepages}) {
-
-		    my $hugepages_size = hugepages_size($conf, $dimm_size);
-		    my $path = hugepages_mount_path($hugepages_size);
-		    my $host_numanode = $numa_hostmap->{$numanode};
-		    my $hugepages_topology->{$hugepages_size}->{$host_numanode} = hugepages_nr($dimm_size, $hugepages_size);
-
-		    my $code = sub {
-			my $hugepages_host_topology = hugepages_host_topology();
-			hugepages_allocate($hugepages_topology, $hugepages_host_topology);
-
-			eval { PVE::QemuServer::vm_mon_cmd($vmid, "object-add", 'qom-type' => "memory-backend-file", id => "mem-$name", props => {
-					     size => int($dimm_size*1024*1024), 'mem-path' => $path, share => JSON::true, prealloc => JSON::true } ); };
-			if (my $err = $@) {
-			    hugepages_reset($hugepages_host_topology);
-			    die $err;
-			}
-
-			hugepages_pre_deallocate($hugepages_topology);
-		    };
-		    eval { hugepages_update_locked($code); };
-
-		} else {
-		    eval { PVE::QemuServer::vm_mon_cmd($vmid, "object-add", 'qom-type' => "memory-backend-ram", id => "mem-$name", props => { size => int($dimm_size*1024*1024) } ) };
-		}
-
+		eval {
+		    qemu_add_dimm($vmid, $conf, $numa_hostmap, $numanode, $dimm_size, $name);
+		};
 		if (my $err = $@) {
 		    eval { PVE::QemuServer::qemu_objectdel($vmid, "mem-$name"); };
 		    die $err;
