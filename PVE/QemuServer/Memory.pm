@@ -203,12 +203,8 @@ sub qemu_dimm_list {
     my $dimms = {};
 
     foreach my $dimm (@$dimmarray) {
-
-        $dimms->{$dimm->{data}->{id}}->{id} = $dimm->{data}->{id};
-        $dimms->{$dimm->{data}->{id}}->{node} = $dimm->{data}->{node};
-        $dimms->{$dimm->{data}->{id}}->{addr} = $dimm->{data}->{addr};
-        $dimms->{$dimm->{data}->{id}}->{size} = $dimm->{data}->{size};
-        $dimms->{$dimm->{data}->{id}}->{slot} = $dimm->{data}->{slot};
+	my $data = $dimm->{data};
+	$dimms->{$data->{id}} = $data;
     }
     return $dimms;
 }
