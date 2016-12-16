@@ -232,6 +232,14 @@ my $confdesc = {
 	minimum => 16,
 	default => 512,
     },
+    dimms => {
+	optional => 1,
+	type => 'string',
+	pattern => '(?:\d+@\d+(?:x\d+)?(?:[ ;]\d+@\d+(?:x\d+)?)*)|none',
+	description => 'When memory hotplug is available and dimms are explicitly specified,'
+	 .' the "memory" option becomes the static memory and the defined DIMMs are used for hotplugging.'
+	 .' This can be "none" to enable later dimm hotplugging with no initial ones added at startup.',
+    },
     balloon => {
         optional => 1,
         type => 'integer',
@@ -4118,6 +4126,9 @@ sub vmconfig_hotplug_pending {
 	    } elsif ($opt =~ m/^memory$/) {
 		die "skip\n" if !$hotplug_features->{memory};
 		PVE::QemuServer::Memory::qemu_memory_hotplug($vmid, $conf, $defaults, $opt);
+	    } elsif ($opt =~ m/^dimms$/) {
+		die "skip\n" if !$hotplug_features->{memory};
+		PVE::QemuServer::Memory::qemu_dimm_hotplug($vmid, $conf, $defaults, $opt);
 	    } elsif ($opt eq 'cpuunits') {
 		cgroups_write("cpu", $vmid, "cpu.shares", $defaults->{cpuunits});
 	    } elsif ($opt eq 'cpulimit') {
@@ -4183,6 +4194,9 @@ sub vmconfig_hotplug_pending {
 	    } elsif ($opt =~ m/^memory$/) { #dimms
 		die "skip\n" if !$hotplug_features->{memory};
 		$value = PVE::QemuServer::Memory::qemu_memory_hotplug($vmid, $conf, $defaults, $opt, $value);
+	    } elsif ($opt =~ m/^dimms$/) {
+		die "skip\n" if !$hotplug_features->{memory};
+		$value = PVE::QemuServer::Memory::qemu_dimm_hotplug($vmid, $conf, $defaults, $opt, $value);
 	    } elsif ($opt eq 'cpuunits') {
 		cgroups_write("cpu", $vmid, "cpu.shares", $conf->{pending}->{$opt});
 	    } elsif ($opt eq 'cpulimit') {

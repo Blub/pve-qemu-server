@@ -152,6 +152,9 @@ sub qemu_memory_hotplug {
 
     return $value if !PVE::QemuServer::check_running($vmid);
 
+    die "static memory cannot be hot-plugged if dimm-hotplugging is used\n"
+	if defined($conf->{dimms});
+
     my $sockets = 1;
     $sockets = $conf->{sockets} if $conf->{sockets};
 
@@ -219,6 +222,165 @@ sub qemu_memory_hotplug {
     }
 }
 
+sub parse_dimmlist {
+    my ($list) = @_;
+    return if $list eq 'none';
+    return map {
+	/^(\d+)@(\d+)(?:x(\d+))?$/
+	? ([$1, $2]) x ($3//1)
+	: die "bad dimm element: $_\n"
+    } PVE::Tools::split_list($list);
+}
+
+my $qemu_update_dimm_config  = sub {
+    my ($vmid, $conf, $cur_sizes_by_node, $write) = @_;
+    my $value = '';
+    foreach my $node (sort {$a <=> $b} keys %$cur_sizes_by_node) {
+	my $cur_sizes = $cur_sizes_by_node->{$node};
+	foreach my $dimm_size (sort {$a <=> $b} keys %$cur_sizes) {
+	    my $sizes = $cur_sizes->{$dimm_size};
+	    my $count = scalar(@$sizes);
+	    next if !$count;
+	    $value .= ';' if length($value);
+	    $value .= "${dimm_size}\@${node}";
+	    $value .= "x$count" if $count != 1;
+	}
+    }
+    $value = 'none' if !length($value);
+    if ($write) {
+	$conf->{dimms} = $value;
+	PVE::QemuConfig->write_config($vmid, $conf);
+    }
+    return $value;
+};
+
+sub qemu_dimm_hotplug {
+    my ($vmid, $conf, $defaults, $opt, $value) = @_;
+
+    return $value if !PVE::QemuServer::check_running($vmid);
+
+    if (!defined($value)) {
+	die "dimms need to be unplugged before deleting the dimms property\n"
+	    if $conf->{dimms} && $conf->{dimms} ne 'none';
+	return undef;
+    }
+
+    my %allnodes;
+    my %allids;
+    my %allsizes;
+
+    my $qemudimms = qemu_dimm_list($vmid);
+
+    my $cur_sizes_by_node = {};
+    foreach my $id (keys %$qemudimms) {
+	my $dimm = $qemudimms->{$id};
+	my $node = $dimm->{node};
+	my $size = $dimm->{size};
+	my $megs = int($size/(1024*1024));
+	next if ($megs*1024*1024) != $size; # sanity check
+	$allids{$id} = 1;
+	$allnodes{$node} = 1;
+	$allsizes{$megs} = 1;
+	push @{$cur_sizes_by_node->{$node}->{$megs}}, $id;
+    }
+
+    my @new_dimms = parse_dimmlist($value);
+    foreach my $dimm (@new_dimms) {
+	my ($dimm_size, $numanode) = @$dimm;
+	$allnodes{$numanode} = 1;
+	$allsizes{$dimm_size} = 1;
+    }
+
+    # check against $MAX_MEM and fill %allnodes
+    my $totalmem = 0;
+    my $totalslots = 0;
+    my $dimm_size_count_per_node = {};
+    foreach my $dimm (@new_dimms) {
+	my ($dimm_size, $numanode) = @$dimm;
+	next if !$dimm_size;
+	$allsizes{$dimm_size} = 1;
+	$allnodes{$numanode} = 1;
+	$totalmem += $dimm_size;
+	++$totalslots;
+	my $dimm_size_count = ($dimm_size_count_per_node->{$numanode} //= {});
+	++($dimm_size_count->{$dimm_size}//=0);
+    }
+    die "you cannot add more memory than $MAX_MEM MB!\n"
+	if $totalmem > $MAX_MEM;
+    die "cannot use more than 64 dimm slots ($totalslots requested)\n"
+	if $totalslots > 64;
+
+    my $id = 0;
+    eval {
+	my %size_done;
+	my $numa_hostmap = get_numa_guest_to_host_map($conf) if $conf->{hugepages};
+	foreach my $numanode (keys %allnodes) {
+	    my $sizecounts = ($dimm_size_count_per_node->{$numanode}//{});
+	    my $cur_sizes = ($cur_sizes_by_node->{$numanode} //= {});
+	    foreach my $dimm_size (sort keys %allsizes) {
+		my $count = $sizecounts->{$dimm_size} // 0;
+		my $cur_ids = ($cur_sizes->{$dimm_size}//=[]);
+		while ($count > scalar(@$cur_ids)) {
+		    ++$id while $allids{"dimm$id"};
+		    my $name = "dimm$id";
+		    eval {
+			qemu_add_dimm($vmid, $conf, $numa_hostmap, $numanode, $dimm_size, $name);
+			PVE::QemuServer::vm_mon_cmd($vmid, "device_add",
+			    driver => "pc-dimm",
+			    id => "$name",
+			    memdev => "mem-$name",
+			    node => $numanode
+			);
+		    };
+		    if (my $err = $@) {
+			eval { PVE::QemuServer::qemu_objectdel($vmid, "mem-$name"); };
+			die $err;
+		    }
+
+		    # update ids for value building below
+		    $allids{$name} = 1;
+		    push @$cur_ids, $name;
+		    &$qemu_update_dimm_config($vmid, $conf, $cur_sizes_by_node, 1);
+		}
+		my $index = scalar(@$cur_ids);
+		while ($count < scalar(@$cur_ids) && $index-- > 0) {
+		    my $name = $cur_ids->[$index];
+		    my $dimm = $qemudimms->{$name};
+		    die "bad dimm name: $dimm\n" if !$dimm; # sanity check
+		    if (!$dimm->{hotpluggable}) {
+			warn "skipping non-hotpluggable dimm $name\n";
+			next;
+		    }
+		    eval {
+			PVE::QemuServer::qemu_devicedel($vmid, "$name");
+			sleep 1;
+			foreach(1..3) {
+			    my $dimm_list = qemu_dimm_list($vmid);
+			    last if !$dimm_list->{$name};
+			    sleep 3;
+			}
+			PVE::QemuServer::qemu_objectdel($vmid, "mem-$name");
+		    };
+		    if (my $err = $@) {
+			warn "failed to delete dimm $name, trying another: ($err)\n";
+			# Try another...
+			next;
+		    }
+
+		    $allids{$name} = 0;
+		    my ($cur_id) = ($name =~ /^dimm(\d+)$/);
+		    $id = $cur_id if $cur_id < $id;
+		    # update ids for value building below
+		    splice @$cur_ids, $index, 1;
+		    &$qemu_update_dimm_config($vmid, $conf, $cur_sizes_by_node, 1);
+		}
+	    }
+	}
+    };
+    warn $@ if $@;
+    return &$qemu_update_dimm_config($vmid, $conf, $cur_sizes_by_node, 0);
+}
+
 sub qemu_dimm_list {
     my ($vmid) = @_;
 
@@ -234,6 +396,9 @@ sub qemu_dimm_list {
 
 sub config {
     my ($conf, $vmid, $sockets, $cores, $defaults, $hotplug_features, $cmd) = @_;
+
+    my $dimmlist = $conf->{dimms};
+    my @dimms = parse_dimmlist($dimmlist) if $dimmlist;
     
     my $memory = $conf->{memory} || $defaults->{memory};
     my $static_memory = 0;
@@ -241,17 +406,20 @@ sub config {
     if ($hotplug_features->{memory}) {
 	die "NUMA needs to be enabled for memory hotplug\n" if !$conf->{numa};
 	die "Total memory is bigger than ${MAX_MEM}MB\n" if $memory > $MAX_MEM;
-	my $sockets = 1;
-	$sockets = $conf->{sockets} if $conf->{sockets};
 
-	$static_memory = $STATICMEM;
-	$static_memory *= $sockets if ($conf->{hugepages} && $conf->{hugepages} eq '1024');
+	if ($dimmlist) {
+	    $static_memory = $memory;
+	} else {
+	    $static_memory = $STATICMEM;
+	    $static_memory *= $sockets if $conf->{hugepages} && $conf->{hugepages} eq '1024';
+	}
 
 	die "minimum memory must be ${static_memory}MB\n" if($memory < $static_memory);
 	push @$cmd, '-m', "size=${static_memory},slots=255,maxmem=${MAX_MEM}M";
 
     } else {
-
+	# without hotplugging dimms are simply added to the memory size...
+	$memory += $_->[0] foreach @dimms;
 	$static_memory = $memory;
 	push @$cmd, '-m', $static_memory;
     }
@@ -323,20 +491,33 @@ sub config {
     }
 
     if ($hotplug_features->{memory}) {
-	foreach_dimm($conf, $vmid, $memory, $sockets, sub {
-	    my ($conf, $vmid, $name, $dimm_size, $numanode, $current_size, $memory) = @_;
-
-	    my $mem_object = print_mem_object($conf, "mem-$name", $dimm_size);
-
-	    push @$cmd, "-object" , $mem_object;
-	    push @$cmd, "-device", "pc-dimm,id=$name,memdev=mem-$name,node=$numanode";
-
-	    #if dimm_memory is not aligned to dimm map
-	    if($current_size > $memory) {
-	         $conf->{memory} = $current_size;
-	         PVE::QemuConfig->write_config($vmid, $conf);
+	if ($dimmlist) {
+	    my $id = 0;
+	    foreach my $dimm (@dimms) {
+		my ($dimm_size, $numanode) = @$dimm;
+		my $name = "dimm$id";
+		$id++;
+		next if !$dimm_size; # size 0 is used for empty slots during migration
+		my $mem_object = print_mem_object($conf, "mem-$name", $dimm_size);
+		push @$cmd, '-object', $mem_object;
+		push @$cmd, '-device', "pc-dimm,id=$name,memdev=mem-$name,node=$numanode";
 	    }
-	});
+	} else {
+	    foreach_dimm($conf, $vmid, $memory, $sockets, sub {
+		my ($conf, $vmid, $name, $dimm_size, $numanode, $current_size, $memory) = @_;
+
+		my $mem_object = print_mem_object($conf, "mem-$name", $dimm_size);
+
+		push @$cmd, '-object' , $mem_object;
+		push @$cmd, '-device', "pc-dimm,id=$name,memdev=mem-$name,node=$numanode";
+
+		#if dimm_memory is not aligned to dimm map
+		if($current_size > $memory) {
+		     $conf->{memory} = $current_size;
+		     PVE::QemuConfig->write_config($vmid, $conf);
+		}
+	    });
+	}
     }
 }
 
@@ -491,14 +672,26 @@ sub hugepages_topology {
     if ($hotplug_features->{memory}) {
 	my $numa_hostmap = get_numa_guest_to_host_map($conf);
 
-	foreach_dimm($conf, undef, $memory, $sockets, sub {
-	    my ($conf, undef, $name, $dimm_size, $numanode, $current_size, $memory) = @_;
+	if (defined(my $dimmlist = $conf->{dimms})) {
+	    my @dimms = parse_dimmlist($dimmlist);
+	    my $id = 0;
+	    foreach my $dimm (@dimms) {
+		my ($dimm_size, $numanode) = @$dimm;
+		next if !$dimm_size;
+		$numanode = $numa_hostmap->{$numanode};
+		my $hugepages_size = hugepages_size($conf, $dimm_size);
+		$hugepages_topology->{$hugepages_size}->{$numanode} += hugepages_nr($dimm_size, $hugepages_size);
+	    }
+	} else {
+	    foreach_dimm($conf, undef, $memory, $sockets, sub {
+		my ($conf, undef, $name, $dimm_size, $numanode, $current_size, $memory) = @_;
 
-	    $numanode = $numa_hostmap->{$numanode};
+		$numanode = $numa_hostmap->{$numanode};
 
-	    my $hugepages_size = hugepages_size($conf, $dimm_size);
-	    $hugepages_topology->{$hugepages_size}->{$numanode} += hugepages_nr($dimm_size, $hugepages_size);
-	});
+		my $hugepages_size = hugepages_size($conf, $dimm_size);
+		$hugepages_topology->{$hugepages_size}->{$numanode} += hugepages_nr($dimm_size, $hugepages_size);
+	    });
+	}
     }
 
     return $hugepages_topology;
