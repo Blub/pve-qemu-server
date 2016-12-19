@@ -5,6 +5,7 @@ use warnings;
 use Cwd 'abs_path';
 use Net::SSLeay;
 use UUID;
+use JSON;
 
 use PVE::Cluster qw (cfs_read_file cfs_write_file);;
 use PVE::SafeSyslog;
@@ -1692,12 +1693,19 @@ __PACKAGE__->register_method({
 	raise_param_exc({ targetstorage => "targetstorage can only by used with migratedfrom." })
 	    if $targetstorage && !$migratedfrom;
 
-	# read spice ticket from STDIN
+	# read state info (spice ticket, hotplugged memory) from STDIN
+	my $stateinfo;
 	my $spice_ticket;
 	if ($stateuri && ($stateuri eq 'tcp') && $migratedfrom && ($rpcenv->{type} eq 'cli')) {
-	    if (defined(my $line = <>)) {
+	    my $line = <>;
+	    if (defined($line) && $line !~ /^\{/) {
+		# backward compatibility: we only got a spice ticket
 		chomp $line;
 		$spice_ticket = $line;
+	    } elsif (defined($line)) { # starts with a {
+		$line .= do { local $/ = undef; <> } // '';
+		$stateinfo = from_json($line);
+		$spice_ticket = $stateinfo->{spice_ticket};
 	    }
 	}
 
@@ -1732,7 +1740,8 @@ __PACKAGE__->register_method({
 		syslog('info', "start VM $vmid: $upid\n");
 
 		PVE::QemuServer::vm_start($storecfg, $vmid, $stateuri, $skiplock, $migratedfrom, undef,
-					  $machine, $spice_ticket, $migration_network, $migration_type, $targetstorage);
+					  $machine, $spice_ticket, $migration_network, $migration_type,
+					  $targetstorage, $stateinfo);
 
 		return;
 	    };

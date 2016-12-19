@@ -6,6 +6,7 @@ use PVE::AbstractMigrate;
 use IO::File;
 use IPC::Open2;
 use POSIX qw( WNOHANG );
+use JSON;
 use PVE::INotify;
 use PVE::Tools;
 use PVE::Cluster;
@@ -469,13 +470,15 @@ sub phase2 {
     my $ruri; # the whole migration dst. URI (protocol:address[:port])
     my $nodename = PVE::INotify::nodename();
 
+    my $stateinfo = {};
+
     ## start on remote node
     my $cmd = [@{$self->{rem_ssh}}];
 
-    my $spice_ticket;
     if (PVE::QemuServer::vga_conf_has_spice($conf->{vga})) {
 	my $res = PVE::QemuServer::vm_mon_cmd($vmid, 'query-spice');
-	$spice_ticket = $res->{ticket};
+	# spice ticket should be "secret" and not passed via the command line
+	$stateinfo->{spice_ticket} = $res->{ticket};
     }
 
     push @$cmd , 'qm', 'start', $vmid, '--skiplock', '--migratedfrom', $nodename;
@@ -514,9 +517,16 @@ sub phase2 {
 
     my $spice_port;
 
-    # Note: We try to keep $spice_ticket secret (do not pass via command line parameter)
-    # instead we pipe it through STDIN
-    PVE::Tools::run_command($cmd, input => $spice_ticket, outfunc => sub {
+    my $hotplug_features = {};
+    if (my $hotplug = $conf->{hotplug}) {
+	$hotplug_features = PVE::QemuServer::parse_hotplug_features($hotplug);
+    }
+    if ($hotplug_features->{memory} && defined($conf->{dimms})) {
+	$stateinfo->{dimms} = PVE::QemuServer::Memory::qemu_dimm_list($vmid);
+    }
+
+    my $statedata = to_json($stateinfo) if %$stateinfo;
+    PVE::Tools::run_command($cmd, input => $statedata, outfunc => sub {
 	my $line = shift;
 
 	if ($line =~ m/^migration listens on tcp:(localhost|[\d\.]+|\[[\d\.:a-fA-F]+\]):(\d+)$/) {

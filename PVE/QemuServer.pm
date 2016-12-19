@@ -2787,7 +2787,7 @@ sub vga_conf_has_spice {
 }
 
 sub config_to_command {
-    my ($storecfg, $vmid, $conf, $defaults, $forcemachine) = @_;
+    my ($storecfg, $vmid, $conf, $defaults, $forcemachine, $stateinfo) = @_;
 
     my $cmd = [];
     my $globalFlags = [];
@@ -3121,8 +3121,9 @@ sub config_to_command {
 
     push @$cmd, '-cpu', $cpu;
 
-    PVE::QemuServer::Memory::config($conf, $vmid, $sockets, $cores, $defaults, $hotplug_features, $cmd);
-    
+    PVE::QemuServer::Memory::config($conf, $vmid, $sockets, $cores,
+				    $defaults, $hotplug_features,
+				    $cmd, $stateinfo->{dimms});
     push @$cmd, '-S' if $conf->{freeze};
 
     # set keyboard layout
@@ -4473,7 +4474,8 @@ sub vmconfig_update_disk {
 
 sub vm_start {
     my ($storecfg, $vmid, $statefile, $skiplock, $migratedfrom, $paused,
-	$forcemachine, $spice_ticket, $migration_network, $migration_type, $targetstorage) = @_;
+	$forcemachine, $spice_ticket, $migration_network, $migration_type,
+	$targetstorage, $stateinfo) = @_;
 
     PVE::QemuConfig->lock_config($vmid, sub {
 	my $conf = PVE::QemuConfig->load_config($vmid, $migratedfrom);
@@ -4542,7 +4544,8 @@ sub vm_start {
 	    }
 	}
 
-	my ($cmd, $vollist, $spice_port) = config_to_command($storecfg, $vmid, $conf, $defaults, $forcemachine);
+	my ($cmd, $vollist, $spice_port) =
+	    config_to_command($storecfg, $vmid, $conf, $defaults, $forcemachine, $stateinfo);
 
 	my $migrate_port = 0;
 	my $migrate_uri;

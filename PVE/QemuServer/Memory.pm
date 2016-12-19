@@ -395,7 +395,7 @@ sub qemu_dimm_list {
 }
 
 sub config {
-    my ($conf, $vmid, $sockets, $cores, $defaults, $hotplug_features, $cmd) = @_;
+    my ($conf, $vmid, $sockets, $cores, $defaults, $hotplug_features, $cmd, $qemu_dimms) = @_;
 
     my $dimmlist = $conf->{dimms};
     my @dimms = parse_dimmlist($dimmlist) if $dimmlist;
@@ -491,7 +491,21 @@ sub config {
     }
 
     if ($hotplug_features->{memory}) {
-	if ($dimmlist) {
+	if ($qemu_dimms) {
+	    foreach my $name (keys %$qemu_dimms) {
+		my $dimm = $qemu_dimms->{$name};
+		my $size = $dimm->{size};
+		my $megs = $size / (1024*1024);
+		die "migration requested dimm size of invalid size\n"
+		    if $megs*1024*1024 != $size;
+		my $mem_object = print_mem_object($conf, "mem-$name", $megs);
+		push @$cmd, '-object', $mem_object;
+		push @$cmd, '-device', "pc-dimm,id=$name,memdev=mem-$name"
+		    . ",slot=$dimm->{slot}"
+		    . ",node=$dimm->{node}"
+		    . sprintf(",addr=0x%x", $dimm->{addr});
+	    }
+	} elsif ($dimmlist) {
 	    my $id = 0;
 	    foreach my $dimm (@dimms) {
 		my ($dimm_size, $numanode) = @$dimm;
