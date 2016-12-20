@@ -254,13 +254,58 @@ my $qemu_update_dimm_config  = sub {
     return $value;
 };
 
+sub current_dimm_config {
+    my ($vmid, $conf, $defaults, $running, $cur_sizes_by_node) = @_;
+
+    my $old = $conf->{dimms};
+
+    if ($running) {
+	# use the above $cur_sizes_by_node info which was queried from qemu.
+	if (!$old) {
+	    use integer;
+	    # We used the old hotplug method before, so we first caclulcate the
+	    # amount of RAM the machine is currently using:
+	    my $memdevs = PVE::QemuServer::vm_mon_cmd_nocheck($vmid, "query-memdev");
+	    my $memory = 0;
+	    $memory += $_->{size} foreach @$memdevs;
+	    $memory /= 1024*1024;
+
+	    # Then subtract the dimm configuration
+	    foreach my $node (keys %$cur_sizes_by_node) {
+		my $sizes = $cur_sizes_by_node->{$node};
+		foreach my $size (keys %$sizes) {
+		    my $size_ids = $sizes->{$size};
+		    $memory -= $size * scalar(@$size_ids);
+		}
+	    }
+	    # Then we have our static memory:
+	    $conf->{memory} = $memory;
+	    PVE::QemuConfig->write_config($vmid, $conf);
+	}
+    } elsif ($old && $old ne 'current') {
+	# Not running and we have a dimm config, no change.
+	return $old;
+    } else {
+	# Not running and old config model was used. Convert:
+	$cur_sizes_by_node = {};
+	my $memory = $conf->{memory} || $defaults->{memory};
+	my $sockets = $conf->{sockets} || 1;
+	foreach_dimm($conf, $vmid, $memory, $sockets, sub {
+	    my ($conf, $vmid, $name, $dimm_size, $numanode, $current_size, $memory) = @_;
+	    push @{$cur_sizes_by_node->{$numanode}->{$dimm_size}}, $name;
+	});
+    }
+
+    return &$qemu_update_dimm_config($vmid, $conf, $cur_sizes_by_node, 0)
+}
+
 sub qemu_dimm_hotplug {
     my ($vmid, $conf, $defaults, $opt, $value) = @_;
 
-    return $value if !PVE::QemuServer::check_running($vmid);
+    my $running = PVE::QemuServer::check_running($vmid);
 
-    if (!defined($value)) {
-	die "dimms need to be unplugged before deleting the dimms property\n"
+    if ($running && !defined($value)) {
+	die "dimms need to be unplugged before deleting the dimm property\n"
 	    if $conf->{dimms} && $conf->{dimms} ne 'none';
 	return undef;
     }
@@ -268,21 +313,27 @@ sub qemu_dimm_hotplug {
     my %allnodes;
     my %allids;
     my %allsizes;
-
-    my $qemudimms = qemu_dimm_list($vmid);
-
+    my $qemudimms;
     my $cur_sizes_by_node = {};
-    foreach my $id (keys %$qemudimms) {
-	my $dimm = $qemudimms->{$id};
-	my $node = $dimm->{node};
-	my $size = $dimm->{size};
-	my $megs = int($size/(1024*1024));
-	next if ($megs*1024*1024) != $size; # sanity check
-	$allids{$id} = 1;
-	$allnodes{$node} = 1;
-	$allsizes{$megs} = 1;
-	push @{$cur_sizes_by_node->{$node}->{$megs}}, $id;
+    if ($running) {
+	$qemudimms = qemu_dimm_list($vmid);
+	foreach my $id (keys %$qemudimms) {
+	    my $dimm = $qemudimms->{$id};
+	    my $node = $dimm->{node};
+	    my $size = $dimm->{size};
+	    my $megs = int($size/(1024*1024));
+	    next if ($megs*1024*1024) != $size; # sanity check
+	    $allids{$id} = 1;
+	    $allnodes{$node} = 1;
+	    $allsizes{$megs} = 1;
+	    push @{$cur_sizes_by_node->{$node}->{$megs}}, $id;
+	}
     }
+
+    return current_dimm_config($vmid, $conf, $defaults, $running, $cur_sizes_by_node)
+	if $value eq 'current';
+
+    return $value if !$running;
 
     my @new_dimms = parse_dimmlist($value);
     foreach my $dimm (@new_dimms) {

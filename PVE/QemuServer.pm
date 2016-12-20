@@ -235,10 +235,11 @@ my $confdesc = {
     dimms => {
 	optional => 1,
 	type => 'string',
-	pattern => '(?:\d+@\d+(?:x\d+)?(?:[ ;]\d+@\d+(?:x\d+)?)*)|none',
+	pattern => '(?:\d+@\d+(?:x\d+)?(?:[ ;]\d+@\d+(?:x\d+)?)*)|none|current',
 	description => 'When memory hotplug is available and dimms are explicitly specified,'
 	 .' the "memory" option becomes the static memory and the defined DIMMs are used for hotplugging.'
-	 .' This can be "none" to enable later dimm hotplugging with no initial ones added at startup.',
+	 .' This can be "none" to enable later dimm hotplugging with no initial ones added at startup.'
+	 .' The special value "current" can be used on a running machine to switch from the old hotplugging method to dimm hotplugging.',
     },
     balloon => {
         optional => 1,
@@ -4263,6 +4264,8 @@ sub vmconfig_apply_pending {
 
     # cold plug
 
+    my $defaults = load_defaults();
+
     my $pending_delete_hash = split_flagged_list($conf->{pending}->{delete});
     while (my ($opt, $force) = each %$pending_delete_hash) {
 	die "internal error" if $opt =~ m/^unused/;
@@ -4293,6 +4296,8 @@ sub vmconfig_apply_pending {
 	    vmconfig_register_unused_drive($storecfg, $vmid, $conf, parse_drive($opt, $conf->{$opt}))
 		if defined($conf->{$opt});
 	    $conf->{$opt} = $conf->{pending}->{$opt};
+	} elsif ($opt eq 'dimms') {
+	    $conf->{$opt} = PVE::QemuServer::Memory::qemu_dimm_hotplug($vmid, $conf, $defaults, $opt, $conf->{pending}->{$opt});
 	} else {
 	    $conf->{$opt} = $conf->{pending}->{$opt};
 	}
