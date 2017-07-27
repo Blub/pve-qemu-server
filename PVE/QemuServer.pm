@@ -549,11 +549,11 @@ my $confdesc_cloudinit = {
 	type => 'string', format => 'address-list',
 	description => "cloud-init: Sets DNS server IP address for a container. Create will automatically use the setting from the host if neither searchdomain nor nameserver are set.",
     },
-    sshkey => {
+    sshkeys => {
 	optional => 1,
-	type => 'string', format => 'urlencoded',
-	maxLength => 1024,
-	description => "cloud-init: ssh keys for root",
+	type => 'string',
+	description => "cloud-init : Setup public SSH keys (one key per line, " .
+			"OpenSSH format).",
     },
     hostname => {
 	optional => 1,
@@ -6821,7 +6821,7 @@ sub generate_cloudinit_userdata {
     $content .= "  - ifdown -a\n";
     $content .= "  - ifup -a\n";
 
-    my $keys = $conf->{sshkey};
+    my $keys = $conf->{sshkeys};
     if ($keys) {
 	$keys = URI::Escape::uri_unescape($keys);
 	$keys = [map { chomp $_; $_ } split(/\n/, $keys)];

@@ -459,6 +459,9 @@ __PACKAGE__->register_method({
 
 	my $storecfg = PVE::Storage::config();
 
+	my $ssh_keys = extract_param($param, 'sshkeys');
+	PVE::Tools::validate_ssh_public_keys($ssh_keys) if defined($ssh_keys);
+
 	PVE::Cluster::check_cfs_quorum();
 
 	if (defined($pool)) {
@@ -914,6 +917,7 @@ my $update_vm_api  = sub {
 
     my $background_delay = extract_param($param, 'background_delay');
 
+
     my @paramarr = (); # used for log message
     foreach my $key (sort keys %$param) {
 	push @paramarr, "-$key", $param->{$key};
@@ -928,6 +932,9 @@ my $update_vm_api  = sub {
     my $revert_str = extract_param($param, 'revert');
 
     my $force = extract_param($param, 'force');
+
+    my $ssh_keys = extract_param($param, 'sshkeys');
+    PVE::Tools::validate_ssh_public_keys($ssh_keys) if defined($ssh_keys);
 
     die "no options specified\n" if !$delete_str && !$revert_str && !scalar(keys %$param);
 
