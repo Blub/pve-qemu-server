@@ -67,6 +67,7 @@ install: ${PKGSOURCES}
 	install -m 0755 pve-bridge-hotplug ${DESTDIR}${VARLIBDIR}/pve-bridge-hotplug
 	install -m 0755 pve-bridgedown ${DESTDIR}${VARLIBDIR}/pve-bridgedown
 	install -D -m 0644 modules-load.conf ${DESTDIR}/etc/modules-load.d/qemu-server.conf
+	install -D -m 0644 nbd-modules-options.conf ${DESTDIR}/etc/modprobe.d/nbd.conf
 	install -m 0755 qmextract ${DESTDIR}${LIBDIR}
 	install -m 0644 qm.1 ${DESTDIR}/${MAN1DIR}
 	gzip -9 -n -f ${DESTDIR}/${MAN1DIR}/qm.1
