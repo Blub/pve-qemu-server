@@ -6759,11 +6759,8 @@ sub commit_cloudinit_disk {
     run_command(['qemu-nbd', '-c', $nbd_dev, $iso_path, '-f', $format]);
 
     eval {
-	run_command(['genisoimage',
-		     '-R',
-		     '-V', 'config-2',
-		     '-o', $nbd_dev,
-		     $file_path]);
+	run_command([['genisoimage', '-R', '-V', 'config-2', $file_path],
+		     ['dd', "of=$nbd_dev", 'conv=fsync']]);
     };
     my $err = $@;
     eval { run_command(['qemu-nbd', '-d', $nbd_dev]); };
