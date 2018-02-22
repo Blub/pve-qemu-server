@@ -459,8 +459,9 @@ __PACKAGE__->register_method({
 
 	my $storecfg = PVE::Storage::config();
 
-	my $ssh_keys = extract_param($param, 'sshkeys');
-	PVE::Tools::validate_ssh_public_keys($ssh_keys) if defined($ssh_keys);
+	if (defined(my $ssh_keys = $param->{sshkeys})) {
+		PVE::Tools::validate_ssh_public_keys($ssh_keys);
+	}
 
 	PVE::Cluster::check_cfs_quorum();
 
@@ -933,8 +934,9 @@ my $update_vm_api  = sub {
 
     my $force = extract_param($param, 'force');
 
-    my $ssh_keys = extract_param($param, 'sshkeys');
-    PVE::Tools::validate_ssh_public_keys($ssh_keys) if defined($ssh_keys);
+    if (defined(my $ssh_keys = $param->{sshkeys})) {
+	    PVE::Tools::validate_ssh_public_keys($ssh_keys);
+    }
 
     die "no options specified\n" if !$delete_str && !$revert_str && !scalar(keys %$param);
 
