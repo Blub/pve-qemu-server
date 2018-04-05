@@ -1,3 +1,9 @@
+qemu-server (5.0-24+vmacache) unstable; urgency=medium
+
+  * restore: set cache mode for disks when restoring from vma
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 23 Mar 2018 10:08:25 +0100
+
 qemu-server (5.0-24) unstable; urgency=medium
 
   * use pve-edk2-firmware for supporting OVMF

@@ -5732,7 +5732,12 @@ sub restore_vma_archive {
 	    PVE::Tools::file_copy($fwcfgfn, "${pve_firewall_dir}/$vmid.fw");
 	}
 
-	while (defined(my $line = <$fh>)) {
+	my $cfgcontent = do { local $/ = undef; <$fh> };
+	my $vmconfig = parse_vm_config("/qemu-server/$vmid.conf", $cfgcontent);
+
+	#while (defined(my $line = <$fh>)) {
+	while ($cfgcontent =~ /^(.*)$/gm) {
+	    my $line = $1;
 	    if ($line =~ m/^\#qmdump\#map:(\S+):(\S+):(\S*):(\S*):$/) {
 		my ($virtdev, $devname, $storeid, $format) = ($1, $2, $3, $4);
 		die "archive does not contain data for drive '$virtdev'\n"
@@ -5747,6 +5752,11 @@ sub restore_vma_archive {
 		$devinfo->{$devname}->{virtdev} = $virtdev;
 		$devinfo->{$devname}->{format} = $format;
 		$devinfo->{$devname}->{storeid} = $storeid;
+
+		if (defined(my $drive_str = $vmconfig->{$virtdev})) {
+		    my $data = parse_drive($virtdev, $drive_str);
+		    $devinfo->{$devname}->{cache} = $data->{cache};
+		}
 
 		# check permission on storage
 		my $pool = $opts->{pool}; # todo: do we need that?
@@ -5820,6 +5830,12 @@ sub restore_vma_archive {
 	    my $map_opts = '';
 	    if (my $limit = $storage_limits{$storeid}) {
 		$map_opts .= "throttling.bps=$limit:throttling.group=$storeid:";
+	    }
+
+	    if (defined(my $cache = $d->{cache})) {
+		$map_opts .= "cache=$cache:";
+	    } else {
+		$map_opts .= "cache=none:";
 	    }
 
 	    # test if requested format is supported

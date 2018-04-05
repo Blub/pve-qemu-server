@@ -1,6 +1,6 @@
 VERSION=5.0
 PACKAGE=qemu-server
-PKGREL=24
+PKGREL=24+vmacache
 
 CFLAGS= -O2 -Werror -Wall -Wtype-limits -Wl,-z,relro 
 
