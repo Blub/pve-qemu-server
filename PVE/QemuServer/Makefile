@@ -5,7 +5,10 @@ SOURCES=PCI.pm		\
 	OVF.pm		\
 	Cloudinit.pm	\
 	Agent.pm	\
+	Machine.pm	\
+	ConfigMachine.pm
 
 .PHONY: install
 install: ${SOURCES}
 	for i in ${SOURCES}; do install -D -m 0644 $$i ${DESTDIR}${PERLDIR}/PVE/QemuServer/$$i; done
+	make -C Machine install

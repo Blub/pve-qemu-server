@@ -30,6 +30,8 @@ use PVE::ProcFSTools;
 use PVE::QemuConfig;
 use PVE::QMPClient;
 use PVE::RPCEnvironment;
+use PVE::QemuServer::Machine;
+use PVE::QemuServer::ConfigMachine;
 use PVE::QemuServer::PCI qw(print_pci_addr print_pcie_addr);
 use PVE::QemuServer::Memory;
 use PVE::QemuServer::USB qw(parse_usb_device);
@@ -4861,7 +4863,8 @@ sub vm_start {
 	    }
 	}
 
-	my ($cmd, $vollist, $spice_port) = config_to_command($storecfg, $vmid, $conf, $defaults, $forcemachine);
+	my ($machine, $vollist, $spice_port, $cmd) = PVE::QemuServer::ConfigMachine::config_to_machine($storecfg, $vmid, $conf, $defaults, $forcemachine);
+	#my ($cmd, $vollist, $spice_port) = config_to_command($storecfg, $vmid, $conf, $defaults, $forcemachine);
 
 	my $migrate_port = 0;
 	my $migrate_uri;
