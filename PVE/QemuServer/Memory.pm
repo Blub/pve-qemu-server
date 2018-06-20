@@ -6,9 +6,9 @@ use PVE::QemuServer;
 use PVE::Tools qw(run_command lock_file lock_file_full file_read_firstline dir_glob_foreach);
 use PVE::Exception qw(raise raise_param_exc);
 
-my $MAX_NUMA = 8;
-my $MAX_MEM = 4194304;
-my $STATICMEM = 1024;
+our $MAX_NUMA = 8;
+our $MAX_MEM = 4194304;
+our $STATICMEM = 1024;
 
 sub get_numa_node_list {
     my ($conf) = @_;

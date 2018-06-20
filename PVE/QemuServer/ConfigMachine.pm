@@ -198,7 +198,7 @@ sub setup_cpu($$$) {
     $m->set_cpu_opts(enforce => '') if $cpu ne 'host' && !$nokvm;
 
     my $cpu_vendor = $PVE::QemuServer::cpu_vendor_list->{$cpu} ||
-	die "internal error"; # should not happen
+	die "internal error: No vendor for cpu type '$cpu' found"; # should not happen
 
     $m->set_cpu_opts(vendor => $cpu_vendor) if $cpu_vendor ne 'default';
 

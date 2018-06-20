@@ -114,7 +114,7 @@ mkdir $lock_dir;
 
 my $pcisysfs = "/sys/bus/pci";
 
-my $cpu_vendor_list = {
+our $cpu_vendor_list = {
     # Intel CPUs
     486 => 'GenuineIntel',
     pentium => 'GenuineIntel',
@@ -637,17 +637,17 @@ while (my ($k, $v) = each %$confdesc) {
     PVE::JSONSchema::register_standard_option("pve-qm-$k", $v);
 }
 
-my $MAX_IDE_DISKS = 4;
-my $MAX_SCSI_DISKS = 14;
-my $MAX_VIRTIO_DISKS = 16;
-my $MAX_SATA_DISKS = 6;
-my $MAX_USB_DEVICES = 5;
-my $MAX_NETS = 32;
-my $MAX_UNUSED_DISKS = 8;
-my $MAX_HOSTPCI_DEVICES = 4;
-my $MAX_SERIAL_PORTS = 4;
-my $MAX_PARALLEL_PORTS = 3;
-my $MAX_NUMA = 8;
+our $MAX_IDE_DISKS = 4;
+our $MAX_SCSI_DISKS = 14;
+our $MAX_VIRTIO_DISKS = 16;
+our $MAX_SATA_DISKS = 6;
+our $MAX_USB_DEVICES = 5;
+our $MAX_NETS = 32;
+our $MAX_UNUSED_DISKS = 8;
+our $MAX_HOSTPCI_DEVICES = 4;
+our $MAX_SERIAL_PORTS = 4;
+our $MAX_PARALLEL_PORTS = 3;
+our $MAX_NUMA = 8;
 
 my $numa_fmt = {
     cpus => {
