@@ -557,6 +557,7 @@ sub add_chardev {
 
 sub add_device_direct {
     my ($self, $type, $id, %options) = @_;
+    die "device without id not allowed (type=$type)\n" if !defined $id;
 
     my $devices = ($self->{devices} //= {});
     my $cmd = $type;
@@ -681,7 +682,7 @@ sub add_agent {
 
     $self->add_chardev('socket', 'qga0', path => $socket, server => '', nowait => '');
     $self->add_virtio_serial_bus('qga0', 'qga0');
-    $self->add_device_direct('virtserialport', undef, chardev => 'qga0',
+    $self->add_device_direct('virtserialport', 'pve-qga0', chardev => 'qga0',
 			     name => 'org.qemu.guest_agent.0',
 			     bus => 'qga0.0', nr => 0);
 }
