@@ -1920,6 +1920,12 @@ sub print_netdev_full {
     return $netdev;
 }
 
+sub parse_cputype {
+    my ($str) = @_;
+    my $cpuconf = PVE::JSONSchema::parse_property_string($cpu_fmt, $str)
+	or die "Cannot parse cpu description: $str\n";
+    return $cpuconf;
+}
 
 sub print_cpu_device {
     my ($conf, $id) = @_;
