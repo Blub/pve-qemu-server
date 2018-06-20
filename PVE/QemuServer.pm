@@ -1319,26 +1319,27 @@ sub kvm_version {
     return  $kvm_api_version;
 }
 
-my $kvm_user_version;
+my $qemu_version_string;
 
-sub kvm_user_version {
+sub qemu_version_string {
+    my ($cmd) = @_;
+    $cmd //= '/usr/bin/kvm';
 
-    return $kvm_user_version if $kvm_user_version;
+    return $qemu_version_string if $qemu_version_string;
 
-    $kvm_user_version = 'unknown';
+    $qemu_version_string = 'unknown';
 
     my $code = sub {
 	my $line = shift;
 	if ($line =~ m/^QEMU( PC)? emulator version (\d+\.\d+(\.\d+)?)(\.\d+)?[,\s]/) {
-	    $kvm_user_version = $2;
+	    $qemu_version_string = $2;
 	}
     };
 
-    eval { run_command("kvm -version", outfunc => $code); };
+    eval { run_command([$cmd, '-version'], outfunc => $code); };
     warn $@ if $@;
 
-    return $kvm_user_version;
-
+    return $qemu_version_string;
 }
 
 my $kernel_has_vhost_net = -c '/dev/vhost-net';
@@ -6625,7 +6626,7 @@ sub qemu_use_old_bios_files {
         $machine_type = $1;
         $use_old_bios_files = 1;
     } else {
-	my $kvmver = kvm_user_version();
+	my $kvmver = qemu_version_string();
         # Note: kvm version < 2.4 use non-efi pxe files, and have problems when we
         # load new efi bios files on migration. So this hack is required to allow
         # live migration from qemu-2.2 to qemu-2.4, which is sometimes used when
