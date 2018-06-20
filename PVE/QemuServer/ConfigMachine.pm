@@ -101,7 +101,7 @@ sub config_to_machine {
 	$m->add_args(@$arglist);
     }
 
-    my $cmd, $m->to_command();
+    my $cmd = $m->to_command();
 
     return ($m, $m->{volume_list}, $m->{spice_port}, $cmd);
 }

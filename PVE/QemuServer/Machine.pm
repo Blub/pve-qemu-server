@@ -485,6 +485,7 @@ my @RAW_DRIVE_OPTIONS = qw(
  trans
  werror
  detect-zeroes
+ serial
 );
 
 sub add_drive {
