@@ -42,12 +42,12 @@ use File::Copy qw(copy);
 use URI::Escape;
 
 my $EDK2_FW_BASE = '/usr/share/pve-edk2-firmware/';
-my $OVMF_CODE = "$EDK2_FW_BASE/OVMF_CODE.fd";
-my $OVMF_VARS = "$EDK2_FW_BASE/OVMF_VARS.fd";
+our $OVMF_CODE = "$EDK2_FW_BASE/OVMF_CODE.fd";
+our $OVMF_VARS = "$EDK2_FW_BASE/OVMF_VARS.fd";
 
 my $qemu_snap_storage = {rbd => 1, sheepdog => 1};
 
-my $cpuinfo = PVE::ProcFSTools::read_cpuinfo();
+our $cpuinfo = PVE::ProcFSTools::read_cpuinfo();
 
 my $QEMU_FORMAT_RE = qr/raw|cow|qcow|qcow2|qed|vmdk|cloop/;
 

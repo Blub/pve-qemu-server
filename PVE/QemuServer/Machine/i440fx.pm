@@ -375,15 +375,11 @@ sub set_bios_type {
     return if $type eq 'seabios';
     die "unknown bios type: $type\n" if $type ne 'ovmf';
 
-    my $ovmfbase;
+    my $ovmfbase = $PVE::QemuServer::OVMF_CODE;
 
     # prefer the OVMF_CODE variant
-    if (-f $PVE::QemuServer::OVMF_CODE) {
-	$ovmfbase = $PVE::QemuServer::OVMF_CODE;
-    } elsif (-f $PVE::QemuServer::OVMF_IMG) {
-	$ovmfbase = $PVE::QemuServer::OVMF_IMG;
-    } else {
-	die "no uefi base image found\n";
+    if (!-f $PVE::QemuServer::OVMF_CODE) {
+	die "uefi base image found at: $ovmfbase\n";
     }
 
     $self->add_pflash(0, $ovmfbase, 'raw', 1);
