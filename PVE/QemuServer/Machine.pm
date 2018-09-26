@@ -15,6 +15,7 @@ use strict;
 use warnings;
 
 use PVE::Tools;
+use PVE::Network;
 use PVE::INotify;
 use PVE::QemuServer;
 use PVE::QemuServer::Memory;
@@ -606,6 +607,12 @@ sub add_object {
     };
 }
 
+sub add_vmgenid {
+    my ($self, $vmgenid) = @_;
+
+    return $self->add_device('vmgenid', 'vmgenid', guid => $vmgenid);
+}
+
 sub add_serial_chardev {
     my ($self, $id, $chardev, %options) = @_;
     $self->add_device($self->serial_device, $id, chardev => $chardev, %options);
@@ -963,7 +970,10 @@ sub to_command {
     }
 
     if (defined(my $spice_port = $self->{spice_port})) {
-	push @$cmd, '-spice', "tls-port=${spice_port},addr=localhost,tls-ciphers=HIGH,seamless-migration=on";
+	my @nodeaddrs = PVE::Tools::getaddrinfo_all('localhost', family => $pfamily);
+	die "failed to get an ip address of type $pfamily for 'localhost'\n" if !@nodeaddrs;
+	my $localhost = PVE::Network::addr_to_ip($nodeaddrs[0]->{addr});
+	push @$cmd, '-spice', "tls-port=${spice_port},addr=$localhost,tls-ciphers=HIGH,seamless-migration=on";
     }
 
     if (my $smbios = $self->{smbios}) {

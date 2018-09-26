@@ -32,8 +32,9 @@ sub create_machine {
 sub config_to_machine {
     my ($storecfg, $vmid, $conf, $defaults, $forcemachine) = @_;
 
-    my $ostype = $conf->{ostype} // $defaults->{ostype};
-    my $vga = $conf->{vga} // $defaults->{vga};
+    my $kvm = $conf->{kvm} // 1;
+    die "KVM virtualisation configured, but not available. Either disable in VM configuration or enable in BIOS.\n"
+	if (!$PVE::QemuServer::cpuinfo->{hvm} && $kvm);
 
     my $hotplug = PVE::QemuServer::parse_hotplug_features($conf->{hotplug} // '1');
 
@@ -51,11 +52,23 @@ sub config_to_machine {
 	$m->{pxe} = 1;
     }
 
+    my $ostype = $conf->{ostype} // $defaults->{ostype};
+    my $win_version => PVE::QemuServer::windows_version($ostype),
+    my $vga = $conf->{vga} // $defaults->{vga};
+    if (!$vga) {
+	if (PVE::QemuServer::qemu_machine_feature_enabled($machine_type, $qemuver, 2, 9)) {
+	    $vga = (!$win_version || $win_version >= 6) ? 'std' : 'cirrus';
+	} else {
+	    $vga = ($win_version >= 6) ? 'std' : 'cirrus';
+	}
+    }
+
     my $info = {
 	ostype => $ostype // '',
 	qemu_version => $qemuver,
+	win_version => $win_version,
+	vga => $vga,
 	qxl_displays => PVE::QemuServer::vga_conf_has_spice($vga),
-	win_version => PVE::QemuServer::windows_version($ostype),
     };
 
     $m->{info} = $info;
@@ -73,7 +86,8 @@ sub config_to_machine {
     setup_memory($m, $conf);
     setup_usb_devices($m, $conf);
 
-    $m->add_agent() if $conf->{agent};
+    $m->add_agent()
+	if PVE::QemuServer::parse_guest_agent($conf->{agent})->{enabled};
 
     my $bootorder = $conf->{boot} || $defaults->{boot};
     my $bootindex_hash = {};
@@ -91,10 +105,15 @@ sub config_to_machine {
     $m->add_args('-no-acpi') if defined($conf->{acpi}) && $conf->{acpi} == 0;
     $m->add_args('-no-reboot') if  defined($conf->{reboot}) && $conf->{reboot} == 0;
 
+    if (my $vmgenid = $conf->{vmgenid}) {
+	$m->add_vmgenid($vmgenid);
+    }
+
     # Set keyboard layout - for people who really do want to do this in
     # completely wrong places.
-    my $kb = $conf->{keyboard} || $defaults->{keyboard};
-    $m->add_args('-k', $kb) if defined($kb);
+    if (defined(my $kb = $conf->{keyboard})) {
+	$m->add_args('-k', $kb);
+    }
 
     if (defined(my $args = $conf->{args})) {
 	my $arglist = PVE::Tools::split_args($args);
@@ -141,20 +160,26 @@ sub setup_bios($$$$) {
     my $bios = $conf->{bios} // $defaults->{bios};
     $m->set_bios_type($bios);
 
+    my ($efivars, $format);
     if (defined(my $efidisk = $conf->{efidisk0})) {
 	my $d = parse_efidisk($conf->{efidisk0});
-	my ($path, $format);
 	my ($storeid, $volname) = PVE::Storage::parse_volume_id($d->{file}, 1);
 	if ($storeid) {
-	    $path = PVE::Storage::path($storecfg, $d->{file});
+	    $efivars = PVE::Storage::path($storecfg, $d->{file});
 	    my $scfg = PVE::Storage::storage_config($storecfg, $storeid);
 	    $format = qemu_img_format($scfg, $volname);
 	} else {
-	    $path = $d->{file};
+	    $efivars = $d->{file};
 	    $format = "raw";
 	}
-	$m->add_pflash(1, $path, $format, 0, 'drive-efidisk0');
+    } elsif ($bios eq 'ovmf') {
+	warn "no efidisk configured! Using temporary efivars disk.\n";
+	$efivars = "/tmp/$vmid-ovmf.fd";
+	PVE::Tools::file_copy($OVMF_VARS, $efivars, -s $OVMF_VARS);
+	$format = 'raw';
     }
+    $m->add_pflash(1, $efivars, $format, 0, 'drive-efidisk0')
+	if defined($efivars);
 }
 
 sub setup_cpu($$$) {
@@ -243,6 +268,10 @@ sub setup_hyperv_options($$$$$$) {
 
     if ($win_version >= 7) {
 	$m->set_cpu_opts(hv_relaxed => '');
+	if (PVE::QemuServer::qemu_machine_feature_enabled($machine_type, $qemuver, 2, 12)) {
+	    $m->set_cpu_opts(hv_synic => '');
+	    $m->set_cpu_opts(hv_stimr => '');
+	}
     }
 }
 
@@ -593,7 +622,7 @@ sub setup_network($$$$) {
 sub setup_display_devices($$$) {
     my ($m, $conf, $defaults) = @_;
 
-    my $vga = $conf->{vga} // $defaults->{vga};
+    my $vga = $m->{info}->{vga};
 
     $m->add_vga($vga);
     my $qxl_displays = $m->{info}->{qxl_displays};
@@ -618,7 +647,7 @@ sub setup_input_devices($$$) {
 
     my $tablet = $conf->{tablet};
     if (!defined($tablet)) {
-	my $vga = $conf->{vga} || '';
+	my $vga = $m->{info}->{vga};
 	if ($m->{info}->{qxl_displays} || $vga =~ /^serial\d+$/) {
 	    $tablet = 0;
 	} else {
